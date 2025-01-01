@@ -38,7 +38,7 @@ TBD
 
 ## Download
 
-There are model weghts for BHSig-B, BHSig-H & CEDAR datasets in [google drive](https://drive.google.com/drive/folders/1NCsdkFgHAbuAIbfeUzJMItvl5wlsJgK8?usp=sharing) 
+There are model weights for BHSig-B, BHSig-H & CEDAR datasets in [google drive](https://drive.google.com/drive/folders/1NCsdkFgHAbuAIbfeUzJMItvl5wlsJgK8?usp=sharing) 
 
 ## Usage
 
