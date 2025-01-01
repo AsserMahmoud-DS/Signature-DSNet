@@ -1,6 +1,6 @@
 # DetailSemNet: Elevating Signature Verification through Detail-Semantic Integration
 
-Meng-Cheng Shih, Tsai-Ling Huang, Yu-Heng Shih, Hong-Han Shuai, Hsuan-Tung Liu, Yi-Ren Yeh, and Ching-Chun Huang, “DetailSemNet: Elevating Signature Verification through Detail-Semantic Integration,” European Conference on Computer Vision (ECCV), 2024.
+Official repository for the paper “DetailSemNet: Elevating Signature Verification through Detail-Semantic Integration,” Meng-Cheng Shih, Tsai-Ling Huang, Yu-Heng Shih, Hong-Han Shuai, Hsuan-Tung Liu, Yi-Ren Yeh, and Ching-Chun Huang, European Conference on Computer Vision (ECCV), 2024.
 
 ## Abstract
 
