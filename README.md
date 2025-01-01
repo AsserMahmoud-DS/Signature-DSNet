@@ -36,6 +36,10 @@ torchvision: 0.13.1+cu102
 
 TBD
 
+## Download
+
+There are model weghts for BHSig-B, BHSig-H & CEDAR datasets in [google drive](https://drive.google.com/drive/folders/1NCsdkFgHAbuAIbfeUzJMItvl5wlsJgK8?usp=sharing) 
+
 ## Usage
 
 Training BHSig-H (Hindi) Dataset:
@@ -54,4 +58,16 @@ CUDA_VISIBLE_DEVICES=0 python train_vit.py --data ./../BHSig260/Hindi --batchSiz
 
 Transformer code: https://github.com/facebookresearch/deit \
 iFormer code: https://github.com/sail-sg/iFormer \
-Full ChiSig dataset: https://github.com/dskezju/Chisig \
+Full ChiSig dataset: https://github.com/dskezju/Chisig
+
+## Citation
+
+```
+@inproceedings{Shih2024DetailSemNet,
+  title={DetailSemNet: Elevating Signature Verification Through Detail-Semantic Integration},
+  author={Meng-Cheng Shih and Tsai-Ling Huang and Yu-Heng Shih and Hong-Han Shuai and Hsuan Tung Liu and Yi-Ren Yeh and Ching-Chun Huang},
+  booktitle={European Conference on Computer Vision},
+  year={2024},
+  url={https://doi.org/10.1007/978-3-031-72698-9_26}
+}
+```
