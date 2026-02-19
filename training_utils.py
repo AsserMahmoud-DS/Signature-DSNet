@@ -60,7 +60,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, devi
     Returns:
         epoch, best_loss, history, args
     """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only = False)
     
     model.load_state_dict(checkpoint['model_state_dict'])
     
