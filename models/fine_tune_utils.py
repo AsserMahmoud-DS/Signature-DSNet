@@ -9,7 +9,7 @@ def set_requires_grad(module: nn.Module, flag: bool):
     for p in module.parameters():
         p.requires_grad = flag
 
-def freeze_backbone_bn(module: nn.Module):
+def freeze_backbone_bn(module: nn.Module): # freeze batchnorm
     """
     Backbone contains BatchNorm2d in patch embedding blocks. Keep them in eval
     so running_mean/var don't change during head-only fine-tune.
