@@ -291,6 +291,86 @@ def validate(model, val_loader, loss_fn, device='cuda'):
     return avg_loss, metrics
 
 
+def evaluate_at_threshold(predictions, labels, threshold, step=None):
+    """
+    Evaluate model predictions at a FIXED threshold (no threshold search).
+    Used for cross-dataset validation to apply threshold learned from training set.
+    Computes metrics at fixed threshold including EER and AUC.
+    
+    Args:
+        predictions: Array of distance scores (lower = more similar)
+        labels: Array of labels (1 = genuine pair, 0 = forged pair)
+        threshold: Fixed distance threshold to use (typically d_optimal from training set)
+        step: Ignored (kept for API compatibility)
+        
+    Returns:
+        Dict with metrics at fixed threshold including EER and AUC
+    """
+    from sklearn.metrics import roc_auc_score, roc_curve
+    
+    predictions = np.asarray(predictions).ravel()
+    labels = np.asarray(labels).ravel()
+    
+    nsame = np.sum(labels == 1)
+    ndiff = np.sum(labels == 0)
+    
+    # Metrics at fixed threshold
+    idx1 = predictions <= threshold      # pred = 1 (genuine)
+    idx2 = predictions > threshold       # pred = 0 (forged)
+    
+    tp = float(np.sum(labels[idx1] == 1))
+    tn = float(np.sum(labels[idx2] == 0))
+    
+    frr = float(np.sum(labels[idx2] == 1)) / nsame if nsame > 0 else 0.0
+    far = float(np.sum(labels[idx1] == 0)) / ndiff if ndiff > 0 else 0.0
+    acc = (tp + tn) / (nsame + ndiff) if (nsame + ndiff) > 0 else 0.0
+    
+    # Compute AUC
+    try:
+        auc_roc = roc_auc_score(labels, -predictions)
+    except:
+        auc_roc = float('nan')
+    
+    # Compute EER and ROC arrays for full curve
+    fpr, tpr, thresholds = roc_curve(labels, -predictions)
+    frr_arr = 1 - tpr
+    far_arr = fpr
+    
+    # Find EER (where FAR = FRR)
+    eer = float('nan')
+    eer_far = float('nan')
+    eer_frr = float('nan')
+    for i in range(len(far_arr)):
+        if abs(far_arr[i] - frr_arr[i]) < abs(eer - eer_far) if not np.isnan(eer) else True:
+            eer = (far_arr[i] + frr_arr[i]) / 2.0
+            eer_far = far_arr[i]
+            eer_frr = frr_arr[i]
+    
+    d_arr = -predictions[np.argsort(predictions)]
+    
+    metrics = {
+        "best_acc": acc,
+        "best_frr": frr,
+        "best_far": far,
+        "eer": eer,
+        "eer_frr": eer_frr,
+        "eer_far": eer_far,
+        "threshold": float(threshold),
+        "auc_roc": auc_roc,
+        "tpr_arr": tpr.tolist(),
+        "far_arr": far_arr.tolist(),
+        "frr_arr": frr_arr.tolist(),
+        "fpr_arr": fpr.tolist(),
+        "d_arr": d_arr.tolist(),
+        "d_optimal": float(threshold),
+        "d_optimal_eer": float(threshold)
+    }
+    
+    print(f"📊 Fixed Threshold Metrics @d={threshold:.6f}: ACC={acc:.4f}, FAR={far:.4f}, FRR={frr:.4f}, AUC={auc_roc:.4f}, EER={eer:.4f}")
+    
+    return metrics
+
+
 def plot_training_history(history, output_path=None):
     """
     Plot training history curves.
