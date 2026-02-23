@@ -169,6 +169,7 @@ class SigDataset_GDPS_Colab(Dataset):
                 pair_path = os.path.join(path, "gray_test.txt")
                 if opt and hasattr(opt, 'part') and opt.part:
                     pair_path = os.path.join(path, "gray_test_part.txt")
+                    data_root = os.path.join(path, "test")
         
         # Parse pairs from file
         self.data_root = data_root

@@ -118,6 +118,7 @@ class SigDataset_GDPS_Kaggle(Dataset):
                 pair_path = os.path.join(pair_root, "gray_train.txt")
                 if opt and hasattr(opt, 'part') and opt.part:
                     pair_path = os.path.join(pair_root, "gray_train_part.txt")
+                    data_root = os.path.join(image_root, "train")
         else:
             if os.path.exists(os.path.join(pair_root, "test", "gray_test.txt")):
                 pair_path = os.path.join(pair_root, "test", "gray_test.txt")
@@ -126,6 +127,7 @@ class SigDataset_GDPS_Kaggle(Dataset):
                 pair_path = os.path.join(pair_root, "gray_test.txt")
                 if opt and hasattr(opt, 'part') and opt.part:
                     pair_path = os.path.join(pair_root, "gray_test_part.txt")
+                    data_root = os.path.join(image_root, "test")
         
         self.img_dict = {}
         for root, dirs, files in os.walk(data_root):
