@@ -88,8 +88,9 @@ class SigDataset_CEDAR_Kaggle(Dataset):
 
 
 class SigDataset_GDPS_Kaggle(Dataset):
-    def __init__(self, opt, path, train=True, image_size=256, mode='normalized'):
-        self.path = path
+    def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized'):
+        self.image_root = image_root
+        self.pair_root = pair_root
         self.image_size = image_size
         self.mode = mode
         
@@ -105,15 +106,15 @@ class SigDataset_GDPS_Kaggle(Dataset):
                         transforms.RandomResizedCrop((image_size, image_size))]
         self.augment_transforms = transforms.Compose(trans_aug_list)
         
-        data_root = path
+        data_root = image_root
         if train:
-            pair_path = os.path.join(data_root, "gray_train.txt")
+            pair_path = os.path.join(pair_root, "gray_train.txt")
             if opt and hasattr(opt, 'part') and opt.part:
-                pair_path = os.path.join(data_root, "gray_train_part.txt")
+                pair_path = os.path.join(pair_root, "gray_train_part.txt")
         else:
-            pair_path = os.path.join(data_root, "gray_test.txt")
+            pair_path = os.path.join(pair_root, "gray_test.txt")
             if opt and hasattr(opt, 'part') and opt.part:
-                pair_path = os.path.join(data_root, "gray_test_part.txt")
+                pair_path = os.path.join(pair_root, "gray_test_part.txt")
         
         self.img_dict = {}
         for dir in os.listdir(data_root):
