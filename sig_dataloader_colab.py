@@ -149,24 +149,34 @@ class SigDataset_GDPS_Colab(Dataset):
                         transforms.RandomResizedCrop((image_size, image_size))]
         self.augment_transforms = transforms.Compose(trans_aug_list)
         
-        # EXACT pair file path logic from SigDataset_CEDAR
+        # Handle both flat and nested GDPS structures
         data_root = path
-        if train:
-            pair_path = os.path.join(data_root, "gray_train.txt")
-            if opt and hasattr(opt, 'part') and opt.part:
-                pair_path = os.path.join(data_root, "gray_train_part.txt")
-        else:
-            pair_path = os.path.join(data_root, "gray_test.txt")
-            if opt and hasattr(opt, 'part') and opt.part:
-                pair_path = os.path.join(data_root, "gray_test_part.txt")
+        pair_path = None
         
-        # Parse pairs from file - EXACT logic from SigDataset_CEDAR
+        if train:
+            if os.path.exists(os.path.join(data_root, "train", "gray_train.txt")):
+                pair_path = os.path.join(data_root, "train", "gray_train.txt")
+                data_root = os.path.join(data_root, "train")
+            elif os.path.exists(os.path.join(path, "gray_train.txt")):
+                pair_path = os.path.join(path, "gray_train.txt")
+                if opt and hasattr(opt, 'part') and opt.part:
+                    pair_path = os.path.join(path, "gray_train_part.txt")
+        else:
+            if os.path.exists(os.path.join(data_root, "test", "gray_test.txt")):
+                pair_path = os.path.join(data_root, "test", "gray_test.txt")
+                data_root = os.path.join(data_root, "test")
+            elif os.path.exists(os.path.join(path, "gray_test.txt")):
+                pair_path = os.path.join(path, "gray_test.txt")
+                if opt and hasattr(opt, 'part') and opt.part:
+                    pair_path = os.path.join(path, "gray_test_part.txt")
+        
+        # Parse pairs from file
         self.data_root = data_root
-        self.pairs = []        # (refer_path_full, test_path_full)
+        self.pairs = []
         self.labels = []
         
-        if not os.path.exists(pair_path):
-            raise FileNotFoundError(f"Pair file not found: {pair_path}")
+        if pair_path is None or not os.path.exists(pair_path):
+            raise FileNotFoundError(f"Pair file not found in {path}")
         
         with open(pair_path, 'r') as f:
             lines = f.readlines()
