@@ -159,17 +159,22 @@ class SigDataset_GDPS_Colab(Dataset):
                 data_root = os.path.join(data_root, "train")
             elif os.path.exists(os.path.join(path, "gray_train.txt")):
                 pair_path = os.path.join(path, "gray_train.txt")
+                data_root = os.path.join(path, "train")
                 if opt and hasattr(opt, 'part') and opt.part:
                     pair_path = os.path.join(path, "gray_train_part.txt")
         else:
             if os.path.exists(os.path.join(data_root, "test", "gray_test.txt")):
                 pair_path = os.path.join(data_root, "test", "gray_test.txt")
                 data_root = os.path.join(data_root, "test")
+
             elif os.path.exists(os.path.join(path, "gray_test.txt")):
                 pair_path = os.path.join(path, "gray_test.txt")
+
+                # IMPORTANT: Always set image root correctly
+                data_root = os.path.join(path, "test")
+
                 if opt and hasattr(opt, 'part') and opt.part:
                     pair_path = os.path.join(path, "gray_test_part.txt")
-                    data_root = os.path.join(path, "test")
         
         # Parse pairs from file
         self.data_root = data_root
