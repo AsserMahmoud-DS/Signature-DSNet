@@ -165,19 +165,27 @@ class SigDataset_GDPS_Colab(Dataset):
         self.pairs = []        # (refer_path_full, test_path_full)
         self.labels = []
         
+        if not os.path.exists(pair_path):
+            raise FileNotFoundError(f"Pair file not found: {pair_path}")
+        
         with open(pair_path, 'r') as f:
             lines = f.readlines()
         
         for line in lines:
-            refer, test, label = line.split()
-            refer_full = os.path.join(data_root, refer)
-            test_full = os.path.join(data_root, test)
-            
-            self.pairs.append((refer_full, test_full))
-            self.labels.append(int(label))
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                refer = parts[0]
+                test = parts[1]
+                label = parts[2]
+                refer_full = os.path.join(data_root, refer)
+                test_full = os.path.join(data_root, test)
+                
+                if os.path.exists(refer_full) and os.path.exists(test_full):
+                    self.pairs.append((refer_full, test_full))
+                    self.labels.append(int(label))
         
         self.train = train
-        print(f"Colab: Loaded {len(self.pairs)} pairs from GDPS (loading images on-the-fly, not pre-caching)")
+        print(f"Colab GDPS: Loaded {len(self.pairs)} pairs (loading images on-the-fly, not pre-caching)")
     
     def __len__(self):
         return len(self.labels)

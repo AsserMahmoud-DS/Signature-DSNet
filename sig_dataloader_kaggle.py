@@ -117,18 +117,13 @@ class SigDataset_GDPS_Kaggle(Dataset):
                 pair_path = os.path.join(pair_root, "gray_test_part.txt")
         
         self.img_dict = {}
-        for dir in os.listdir(data_root):
-            dir_path = os.path.join(data_root, dir)
-            if os.path.isdir(dir_path):
-                for subdir in os.listdir(dir_path):
-                    subdir_path = os.path.join(dir_path, subdir)
-                    if os.path.isdir(subdir_path):
-                        for img in tqdm(os.listdir(subdir_path), desc=f"Loading {dir}/{subdir}"):
-                            if img[-4:] == '.png':
-                                img_path = os.path.join(subdir_path, img)
-                                sig_image, _ = imread_tool(img_path)
-                                sig_image = self.basic_transforms(sig_image)
-                                self.img_dict[img_path] = sig_image
+        for root, dirs, files in os.walk(data_root):
+            for img in tqdm(files, desc=f"Loading {root}"):
+                if img[-4:] == '.png':
+                    img_path = os.path.join(root, img)
+                    sig_image, _ = imread_tool(img_path)
+                    sig_image = self.basic_transforms(sig_image)
+                    self.img_dict[img_path] = sig_image
         
         with open(pair_path, 'r') as f:
             lines = f.readlines()
