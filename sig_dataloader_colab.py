@@ -149,32 +149,19 @@ class SigDataset_GDPS_Colab(Dataset):
                         transforms.RandomResizedCrop((image_size, image_size))]
         self.augment_transforms = transforms.Compose(trans_aug_list)
         
-        # Handle both flat and nested GDPS structures
+        # For GDPS: pair files are at GDPS_ROOT, paths in file include "test/" or "train/" prefix
+        # DO NOT reset data_root - keep it as the GDPS root
         data_root = path
         pair_path = None
         
         if train:
-            if os.path.exists(os.path.join(data_root, "train", "gray_train.txt")):
-                pair_path = os.path.join(data_root, "train", "gray_train.txt")
-                data_root = os.path.join(data_root, "train")
-            elif os.path.exists(os.path.join(path, "gray_train.txt")):
-                pair_path = os.path.join(path, "gray_train.txt")
-                data_root = os.path.join(path, "train")
-                if opt and hasattr(opt, 'part') and opt.part:
-                    pair_path = os.path.join(path, "gray_train_part.txt")
+            pair_path = os.path.join(path, "gray_train.txt")
+            if opt and hasattr(opt, 'part') and opt.part:
+                pair_path = os.path.join(path, "gray_train_part.txt")
         else:
-            if os.path.exists(os.path.join(data_root, "test", "gray_test.txt")):
-                pair_path = os.path.join(data_root, "test", "gray_test.txt")
-                data_root = os.path.join(data_root, "test")
-
-            elif os.path.exists(os.path.join(path, "gray_test.txt")):
-                pair_path = os.path.join(path, "gray_test.txt")
-
-                # IMPORTANT: Always set image root correctly
-                data_root = os.path.join(path, "test")
-
-                if opt and hasattr(opt, 'part') and opt.part:
-                    pair_path = os.path.join(path, "gray_test_part.txt")
+            pair_path = os.path.join(path, "gray_test.txt")
+            if opt and hasattr(opt, 'part') and opt.part:
+                pair_path = os.path.join(path, "gray_test_part.txt")
         
         # Parse pairs from file
         self.data_root = data_root
@@ -182,7 +169,10 @@ class SigDataset_GDPS_Colab(Dataset):
         self.labels = []
         
         if pair_path is None or not os.path.exists(pair_path):
-            raise FileNotFoundError(f"Pair file not found in {path}")
+            print(f"⚠️  Pair file not found at {pair_path}")
+            print(f"    Make sure to run generate_gdps_pairs() first to create pair files")
+            self.train = train
+            return
         
         with open(pair_path, 'r') as f:
             lines = f.readlines()
@@ -196,12 +186,15 @@ class SigDataset_GDPS_Colab(Dataset):
                 refer_full = os.path.join(data_root, refer)
                 test_full = os.path.join(data_root, test)
                 
-                if os.path.exists(refer_full) and os.path.exists(test_full):
-                    self.pairs.append((refer_full, test_full))
-                    self.labels.append(int(label))
+                # Add pairs even if files don't exist yet (they will be loaded on-demand)
+                # Only check if paths are valid (relative to data_root)
+                self.pairs.append((refer_full, test_full))
+                self.labels.append(int(label))
         
         self.train = train
-        print(f"Colab GDPS: Loaded {len(self.pairs)} pairs (loading images on-the-fly, not pre-caching)")
+        print(f"✅ Colab GDPS: Loaded {len(self.pairs)} pairs from {pair_path}")
+        if len(self.pairs) == 0:
+            print(f"⚠️  No pairs loaded. Check pair file format and image paths.")
     
     def __len__(self):
         return len(self.labels)
