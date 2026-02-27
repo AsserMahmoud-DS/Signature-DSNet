@@ -2,7 +2,7 @@
 *.pth
 *.csv
 *.pyc
-
+*.ipynb
 pretrain/*
 saved_models/*
 deit/
