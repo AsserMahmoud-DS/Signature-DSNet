@@ -143,7 +143,7 @@ class SigDataset_GDPS_Kaggle(Dataset):
             writers_needed = set()
             with open(pair_path, 'r') as f:
                 for line in f:
-                    parts = line.strip().split()
+                    parts = line.strip().split('\t')  # Use tab as delimiter to handle filenames with spaces
                     if len(parts) >= 2:
                         refer = parts[0]  # e.g., "test/1/genuine/img.jpg"
                         refer_parts = refer.split(os.sep)
