@@ -151,19 +151,24 @@ class SigDataset_GDPS_Kaggle(Dataset):
                             writers_needed.add(refer_parts[1])  # extract "1" from above
             
             # Pre-cache only the writer folders we need
+            # First collect all image paths
+            img_paths_to_load = []
             for root, dirs, files in os.walk(data_root):
                 rel_root = os.path.relpath(root, data_root)
                 # Extract writer ID from path: "test/1" or "train/1"
                 parts = rel_root.split(os.sep)
                 if len(parts) >= 2 and parts[1] in writers_needed:
-                    for img in tqdm(files, desc=f"Loading {root}"):
+                    for img in files:
                         if img.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            img_path = os.path.join(root, img)
-                            sig_image, _ = imread_tool(img_path)
-                            sig_image = self.basic_transforms(sig_image)
-                            # Store with full path relative to image_root
-                            rel_path = os.path.relpath(img_path, data_root)
-                            self.img_dict[rel_path] = sig_image
+                            img_paths_to_load.append((os.path.join(root, img), data_root))
+            
+            # Then load all images with a single progress bar
+            for img_path, data_root in tqdm(img_paths_to_load, desc="Loading GDPS images"):
+                sig_image, _ = imread_tool(img_path)
+                sig_image = self.basic_transforms(sig_image)
+                # Store with full path relative to image_root
+                rel_path = os.path.relpath(img_path, data_root)
+                self.img_dict[rel_path] = sig_image
         
         if pair_path is None or not os.path.exists(pair_path):
             print(f"⚠️  Pair file not found at {pair_path}")
