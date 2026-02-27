@@ -78,13 +78,25 @@ class SigDataset_CEDAR_Colab(Dataset):
         with open(pair_path, 'r') as f:
             lines = f.readlines()
         
-        for line in lines:
-            refer, test, label = line.split()
-            refer_full = os.path.join(data_root, refer)
-            test_full = os.path.join(data_root, test)
+        for line_num, line in enumerate(lines, 1):
+            parts = line.strip().split('\t')  # Use tab as delimiter to handle filenames with spaces
+            if len(parts) < 3:
+                if len(parts) > 0:  # Skip empty lines
+                    print(f"⚠️  Line {line_num} has {len(parts)} columns (expected 3): {line.strip()[:80]}")
+                continue
             
-            self.pairs.append((refer_full, test_full))
-            self.labels.append(int(label))
+            try:
+                refer, test, label = parts[0], parts[1], parts[2]
+                refer_full = os.path.join(data_root, refer)
+                test_full = os.path.join(data_root, test)
+                
+                self.pairs.append((refer_full, test_full))
+                self.labels.append(int(label))
+            except ValueError as e:
+                print(f"❌ Error parsing line {line_num}: {line.strip()}")
+                print(f"   columns: {parts}")
+                print(f"   Error: {e}")
+                raise
         
         self.train = train
         print(f"Colab: Loaded {len(self.pairs)} pairs (loading images on-the-fly, not pre-caching)")
@@ -177,9 +189,14 @@ class SigDataset_GDPS_Colab(Dataset):
         with open(pair_path, 'r') as f:
             lines = f.readlines()
         
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) >= 3:
+        for line_num, line in enumerate(lines, 1):
+            parts = line.strip().split('\t')  # Use tab as delimiter to handle filenames with spaces
+            if len(parts) < 3:
+                if len(parts) > 0:  # Skip empty lines
+                    print(f"⚠️  Line {line_num} has {len(parts)} columns (expected 3): {line.strip()[:80]}")
+                continue
+            
+            try:
                 refer = parts[0]
                 test = parts[1]
                 label = parts[2]
@@ -190,6 +207,11 @@ class SigDataset_GDPS_Colab(Dataset):
                 # Only check if paths are valid (relative to data_root)
                 self.pairs.append((refer_full, test_full))
                 self.labels.append(int(label))
+            except ValueError as e:
+                print(f"❌ Error parsing line {line_num}: {line.strip()}")
+                print(f"   columns: {parts}")
+                print(f"   Error: {e}")
+                raise
         
         self.train = train
         print(f"✅ Colab GDPS: Loaded {len(self.pairs)} pairs from {pair_path}")

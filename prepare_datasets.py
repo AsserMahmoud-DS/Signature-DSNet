@@ -97,17 +97,17 @@ def generate_cedar_pairs(data_root, train_ratio=0.73, random_state=42):
     train_pairs = generate_pairs_for_split(train_writers, is_train=True)
     test_pairs = generate_pairs_for_split(test_writers, is_train=False)
     
-    # Write to files
+    # Write to files (tab-separated to handle filenames with spaces)
     train_txt = os.path.join(data_root, "gray_train.txt")
     test_txt = os.path.join(data_root, "gray_test.txt")
     
     with open(train_txt, 'w') as f:
         for refer, test, label in train_pairs:
-            f.write(f"{refer} {test} {label}\n")
+            f.write(f"{refer}\t{test}\t{label}\n")
     
     with open(test_txt, 'w') as f:
         for refer, test, label in test_pairs:
-            f.write(f"{refer} {test} {label}\n")
+            f.write(f"{refer}\t{test}\t{label}\n")
     
     print(f"✅ Generated {train_txt}: {len(train_pairs)} pairs")
     print(f"✅ Generated {test_txt}: {len(test_pairs)} pairs")
@@ -211,17 +211,17 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
     train_pairs = generate_pairs_for_split(train_writers, is_train=True)
     test_pairs = generate_pairs_for_split(test_writers, is_train=False)
     
-    # Write pair files to GDPS_ROOT
+    # Write pair files to GDPS_ROOT (tab-separated to handle filenames with spaces)
     train_txt = os.path.join(data_root, "gray_train.txt")
     test_txt = os.path.join(data_root, "gray_test.txt")
     
     with open(train_txt, 'w') as f:
         for refer, test, label in train_pairs:
-            f.write(f"{refer} {test} {label}\n")
+            f.write(f"{refer}\t{test}\t{label}\n")
     
     with open(test_txt, 'w') as f:
         for refer, test, label in test_pairs:
-            f.write(f"{refer} {test} {label}\n")
+            f.write(f"{refer}\t{test}\t{label}\n")
     
     print(f"✅ Generated {train_txt}: {len(train_pairs)} pairs")
     print(f"✅ Generated {test_txt}: {len(test_pairs)} pairs")

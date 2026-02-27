@@ -62,15 +62,27 @@ class SigDataset_CEDAR_Kaggle(Dataset):
 
         self.labels = []
         self.datas = []
-        for line in lines:
-            refer, test, label = line.split()
+        for line_num, line in enumerate(lines, 1):
+            parts = line.strip().split('\t')  # Use tab as delimiter to handle filenames with spaces
+            if len(parts) < 3:
+                if len(parts) > 0:  # Skip empty lines
+                    print(f"⚠️  Line {line_num} has {len(parts)} columns (expected 3): {line.strip()[:80]}")
+                continue
             
-            refer_img = self.img_dict[os.path.join(data_root, refer)]
-            test_img = self.img_dict[os.path.join(data_root, test)]
-            
-            refer_test = torch.cat((refer_img, test_img), dim=0)
-            self.datas.append(refer_test)
-            self.labels.append(int(label))
+            try:
+                refer, test, label = parts[0], parts[1], parts[2]
+                
+                refer_img = self.img_dict[os.path.join(data_root, refer)]
+                test_img = self.img_dict[os.path.join(data_root, test)]
+                
+                refer_test = torch.cat((refer_img, test_img), dim=0)
+                self.datas.append(refer_test)
+                self.labels.append(int(label))
+            except (KeyError, ValueError) as e:
+                print(f"❌ Error processing line {line_num}: {line.strip()}")
+                print(f"   columns: {parts}")
+                print(f"   Error: {e}")
+                raise
         
         self.train = train
         print(f"Kaggle: Loaded {len(self.labels)} pairs (pre-cached in RAM)")
@@ -164,9 +176,14 @@ class SigDataset_GDPS_Kaggle(Dataset):
 
             self.labels = []
             self.datas = []
-            for line in lines:
-                parts = line.strip().split()
-                if len(parts) >= 3:
+            for line_num, line in enumerate(lines, 1):
+                parts = line.strip().split('\t')  # Use tab as delimiter to handle filenames with spaces
+                if len(parts) < 3:
+                    if len(parts) > 0:  # Skip empty lines
+                        print(f"⚠️  Line {line_num} has {len(parts)} columns (expected 3): {line.strip()[:80]}")
+                    continue
+                
+                try:
                     refer = parts[0]  # e.g., "test/1/genuine/img.jpg"
                     test = parts[1]
                     label = parts[2]
@@ -178,6 +195,11 @@ class SigDataset_GDPS_Kaggle(Dataset):
                         refer_test = torch.cat((refer_img, test_img), dim=0)
                         self.datas.append(refer_test)
                         self.labels.append(int(label))
+                except ValueError as e:
+                    print(f"❌ Error parsing line {line_num}: {line.strip()}")
+                    print(f"   columns: {parts}")
+                    print(f"   Error: {e}")
+                    raise
         
         self.train = train
         print(f"Kaggle GDPS: Loaded {len(self.labels)} pairs (pre-cached in RAM)")
