@@ -46,16 +46,22 @@ class SigDataset_CEDAR_Kaggle(Dataset):
             if opt and hasattr(opt, 'part') and opt.part:
                 pair_path = os.path.join(pair_root, "gray_test_part.txt")
         
-        self.img_dict = {}
+        # First collect all image paths
+        img_paths_to_load = []
         for dir in os.listdir(data_root):
             dir_path = os.path.join(data_root, dir)
             if os.path.isdir(dir_path):
-                for img in tqdm(os.listdir(dir_path)):
+                for img in os.listdir(dir_path):
                     if img[-4:] == '.png':
                         img_path = os.path.join(dir_path, img)
-                        sig_image, _ = imread_tool(img_path)
-                        sig_image = self.basic_transforms(sig_image)
-                        self.img_dict[img_path] = sig_image
+                        img_paths_to_load.append(img_path)
+        
+        # Then load all images with a single progress bar
+        self.img_dict = {}
+        for img_path in tqdm(img_paths_to_load, desc="Loading CEDAR images", unit="img"):
+            sig_image, _ = imread_tool(img_path)
+            sig_image = self.basic_transforms(sig_image)
+            self.img_dict[img_path] = sig_image
         
         with open(pair_path, 'r') as f:
             lines = f.readlines()
@@ -160,10 +166,10 @@ class SigDataset_GDPS_Kaggle(Dataset):
                 if len(parts) >= 2 and parts[1] in writers_needed:
                     for img in files:
                         if img.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            img_paths_to_load.append((os.path.join(root, img), data_root))
+                            img_paths_to_load.append(os.path.join(root, img))
             
             # Then load all images with a single progress bar
-            for img_path, data_root in tqdm(img_paths_to_load, desc="Loading GDPS images"):
+            for img_path in tqdm(img_paths_to_load, desc="Loading GDPS images", unit="img"):
                 sig_image, _ = imread_tool(img_path)
                 sig_image = self.basic_transforms(sig_image)
                 # Store with full path relative to image_root
