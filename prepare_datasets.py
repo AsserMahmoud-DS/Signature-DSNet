@@ -33,7 +33,7 @@ def generate_cedar_pairs(data_root, train_ratio=0.73, random_state=42):
     # Parse genuine signatures
     genuine_sigs = {}  # {writer_id: [list of (filename, rel_path)]}
     for img_file in os.listdir(full_org_path):
-        if img_file.endswith('.png'):
+        if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
             parts = img_file.split('_')
             writer_id = int(parts[1])
             
@@ -46,7 +46,7 @@ def generate_cedar_pairs(data_root, train_ratio=0.73, random_state=42):
     # Parse forged signatures
     forged_sigs = {}  # {writer_id: [list of (filename, rel_path)]}
     for img_file in os.listdir(full_forg_path):
-        if img_file.endswith('.png'):
+        if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
             parts = img_file.split('_')
             writer_id = int(parts[1])
             
@@ -129,7 +129,10 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
     GDPS structure:
     - test/: writer folders (1/ to 150/)
       - Each writer folder: forge/ and genuine/
-      - Files: c{userid}{instance}.png (genuine), cf{userid}{instance}.png (forged)
+      - Images are .jpg files
+    
+    Pair file paths are relative to GDPS_ROOT and include "test/" prefix:
+      e.g. test/1/genuine/c001001.jpg test/1/genuine/c001002.jpg 1
     
     Args:
         data_root: Path to GDPS root directory
@@ -137,10 +140,7 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
         random_state: Random seed for reproducibility
     """
     
-    # Check if test folder exists
     test_path = os.path.join(data_root, "test")
-    if not os.path.exists(test_path):
-        test_path = data_root  # Fallback: assume data_root IS the test folder
     
     # Parse writers from directories
     genuine_sigs = {}  # {writer_id: [rel_paths]}
@@ -165,31 +165,17 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
         
         if os.path.isdir(genuine_folder):
             for img_file in os.listdir(genuine_folder):
-                if img_file.endswith('.png'):
-                    if test_path == data_root:
-                        rel_path = os.path.join(writer_dir, "genuine", img_file)
-                    else:
-                        rel_path = os.path.join("test", writer_dir, "genuine", img_file)
+                if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    rel_path = os.path.join("test", writer_dir, "genuine", img_file)
                     genuine_sigs[writer_id].append(rel_path)
         
         if os.path.isdir(forge_folder):
             for img_file in os.listdir(forge_folder):
-                if img_file.endswith('.png'):
-                    if test_path == data_root:
-                        rel_path = os.path.join(writer_dir, "forge", img_file)
-                    else:
-                        rel_path = os.path.join("test", writer_dir, "forge", img_file)
+                if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    rel_path = os.path.join("test", writer_dir, "forge", img_file)
                     forged_sigs[writer_id].append(rel_path)
     
-    print(f"GDPS: Found {len(genuine_sigs)} writers")
-    print(f"DEBUG: Sample genuine_sigs[2]: {genuine_sigs.get(2, [])} ({len(genuine_sigs.get(2, []))} items)")
-    print(f"DEBUG: Sample forged_sigs[2]: {forged_sigs.get(2, [])} ({len(forged_sigs.get(2, []))} items)")
-    
-    # Filter writers with at least some signatures
-    valid_writers = [w for w in genuine_sigs.keys() if len(genuine_sigs[w]) > 0 and len(forged_sigs[w]) > 0]
-    print(f"GDPS: {len(valid_writers)} writers with both genuine and forged signatures")
-    
-    all_writers = sorted(valid_writers)
+    all_writers = sorted(genuine_sigs.keys())
     num_train = int(len(all_writers) * train_ratio)
     
     import random
@@ -207,8 +193,8 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
             gen_list = genuine_sigs[writer_id]
             forg_list = forged_sigs[writer_id]
             
-            if len(gen_list) < 2 and len(gen_list) < 1:
-                continue  # Skip writers with no genuine signatures
+            if len(gen_list) < 2:
+                continue  # Skip writers with < 2 genuine signatures
             
             # Positive pairs: genuine-to-genuine from same writer
             for i in range(len(gen_list)):
@@ -225,7 +211,7 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
     train_pairs = generate_pairs_for_split(train_writers, is_train=True)
     test_pairs = generate_pairs_for_split(test_writers, is_train=False)
     
-    # Write to files
+    # Write pair files to GDPS_ROOT
     train_txt = os.path.join(data_root, "gray_train.txt")
     test_txt = os.path.join(data_root, "gray_test.txt")
     
