@@ -217,6 +217,9 @@ def train_one_epoch(model, train_loader, optimizer, loss_fn, device='cuda', shif
         
         images = images.to(device)
         labels = labels.to(device)
+        # Dataloaders in this repo often return labels shaped [B,1,1].
+        # The model+loss expect a binary label per pair; normalize to [B,1].
+        labels = labels.view(labels.shape[0], -1)[:, :1].float()
         
         optimizer.zero_grad()
         
@@ -267,6 +270,7 @@ def validate(model, val_loader, loss_fn, device='cuda'):
             
             images = images.to(device)
             labels = labels.to(device)
+            labels = labels.view(labels.shape[0], -1)[:, :1].float()
             
             # Forward pass
             outputs, loss = model(images, labels)
