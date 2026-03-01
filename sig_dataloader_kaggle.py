@@ -105,6 +105,110 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         return image_pair, torch.tensor([[self.labels[index]]])
 
 
+class SigDataset_CEDAR_Kaggle_Lite(Dataset):
+    def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized'):
+        """RAM-cached CEDAR loader that only caches images referenced by the pair file.
+
+        Differences vs `SigDataset_CEDAR_Kaggle`:
+        - Reads pair file first and caches only needed images (subset-friendly)
+        - Does NOT pre-build `self.datas` (avoids duplicating pair tensors in RAM)
+        """
+
+        self.image_root = image_root
+        self.pair_root = pair_root
+        self.image_size = image_size
+        self.mode = mode
+        self.train = train
+
+        trans_list = [
+            transforms.RandomInvert(1.0),
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+        ]
+        self.basic_transforms = transforms.Compose(trans_list)
+
+        trans_aug_list = [
+            transforms.ColorJitter(0.4, 0.4, 0.4, 0.2),
+            transforms.RandomErasing(),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.RandomResizedCrop((image_size, image_size)),
+        ]
+        self.augment_transforms = transforms.Compose(trans_aug_list)
+
+        data_root = image_root
+
+        if train:
+            pair_path = os.path.join(pair_root, "gray_train.txt")
+            if opt and hasattr(opt, 'part') and opt.part:
+                pair_path = os.path.join(pair_root, "gray_train_part.txt")
+        else:
+            pair_path = os.path.join(pair_root, "gray_test.txt")
+            if opt and hasattr(opt, 'part') and opt.part:
+                pair_path = os.path.join(pair_root, "gray_test_part.txt")
+
+        if not os.path.exists(pair_path):
+            raise FileNotFoundError(
+                f"Pair file not found at {pair_path}. "
+                "Make sure to generate CEDAR gray_train.txt/gray_test.txt first."
+            )
+
+        # Read pair file first
+        self.pairs = []  # (refer_rel, test_rel, label_int)
+        needed_rel_paths = set()
+        with open(pair_path, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                parts = line.strip().split('\t')
+                if len(parts) < 3:
+                    if len(parts) > 0:
+                        print(f"⚠️  Line {line_num} has {len(parts)} columns (expected 3): {line.strip()[:80]}")
+                    continue
+
+                refer_rel, test_rel, label = parts[0], parts[1], parts[2]
+                try:
+                    label_int = int(label)
+                except ValueError as e:
+                    print(f"❌ Error parsing label on line {line_num}: {line.strip()}")
+                    raise e
+
+                self.pairs.append((refer_rel, test_rel, label_int))
+                needed_rel_paths.add(refer_rel)
+                needed_rel_paths.add(test_rel)
+
+        # Cache only needed images
+        self.img_dict = {}
+        img_paths_to_load = []
+        for rel_path in sorted(needed_rel_paths):
+            abs_path = os.path.join(data_root, rel_path)
+            img_paths_to_load.append((rel_path, abs_path))
+
+        for rel_path, abs_path in tqdm(img_paths_to_load, desc="Loading CEDAR images (lite)", unit="img"):
+            if not os.path.exists(abs_path):
+                raise FileNotFoundError(f"Missing image referenced by pair file: {abs_path}")
+            sig_image, _ = imread_tool(abs_path)
+            sig_image = self.basic_transforms(sig_image)
+            self.img_dict[rel_path] = sig_image
+
+        print(
+            f"Kaggle CEDAR (lite): Loaded {len(self.pairs)} pairs; "
+            f"cached {len(self.img_dict)} images in RAM"
+        )
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, index):
+        refer_rel, test_rel, label_int = self.pairs[index]
+        refer_img = self.img_dict[refer_rel]
+        test_img = self.img_dict[test_rel]
+        image_pair = torch.cat((refer_img, test_img), dim=0)
+
+        if self.train:
+            image_pair = torch.squeeze(self.augment_transforms(torch.unsqueeze(image_pair, dim=1)))
+
+        return image_pair, torch.tensor([[label_int]])
+
+
 class SigDataset_GDPS_Kaggle(Dataset):
     def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized'):
         self.image_root = image_root
@@ -152,9 +256,10 @@ class SigDataset_GDPS_Kaggle(Dataset):
                     parts = line.strip().split('\t')  # Use tab as delimiter to handle filenames with spaces
                     if len(parts) >= 2:
                         refer = parts[0]  # e.g., "test/1/genuine/img.jpg"
-                        refer_parts = refer.split(os.sep)
+                        # Pair files are written with os.path.join(), so separators can vary
+                        refer_parts = refer.replace('\\', '/').split('/')
                         if len(refer_parts) >= 2:
-                            writers_needed.add(refer_parts[1])  # extract "1" from above
+                            writers_needed.add(refer_parts[1])  # extract "1" from "test/1/genuine/..."
             
             # Pre-cache only the writer folders we need
             # First collect all image paths
