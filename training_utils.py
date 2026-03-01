@@ -11,7 +11,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from sklearn.metrics import auc
 
 
 def save_checkpoint(save_path, epoch, model, optimizer, scheduler, best_loss, history, args=None):
@@ -87,10 +86,15 @@ def compute_metrics(predictions, labels, step=None):
     
     Computes: accuracy, FAR, FRR, EER, and ROC curve.
     
+    Notes:
+        - `predictions` are distances where LOWER = more likely genuine.
+        - Threshold semantics follow the repo: predict genuine if distance <= d.
+        - Internally uses sklearn ROC utilities on scores = -distance.
+
     Args:
         predictions: Numpy array of predicted distances [N,]
         labels: Numpy array of labels (1=genuine, 0=forged) [N,]
-        step: Threshold step size (default 5e-5)
+        step: Ignored (kept for API compatibility)
         
     Returns:
         metrics dict with keys:
@@ -103,88 +107,88 @@ def compute_metrics(predictions, labels, step=None):
         - auc_roc: Area under ROC curve
         - tpr_arr, far_arr, frr_arr, d_arr: Arrays for plotting
     """
-    dmax = np.max(predictions)
-    dmin = np.min(predictions)
-    nsame = np.sum(labels == 1)
-    ndiff = np.sum(labels == 0)
-    
-    if step is None:
-        step = 0.00005
-    
+    # Model outputs are distances where LOWER = more likely genuine.
+    # For sklearn ROC utilities we use scores where HIGHER = more likely genuine.
+    from sklearn.metrics import roc_auc_score, roc_curve
+
+    predictions = np.asarray(predictions).ravel().astype(np.float64)
+    labels = np.asarray(labels).ravel().astype(np.int64)
+
+    nsame = int(np.sum(labels == 1))
+    ndiff = int(np.sum(labels == 0))
+    if (nsame + ndiff) == 0:
+        raise ValueError("Empty labels passed to compute_metrics")
+
+    scores = -predictions
+
+    # ROC / AUC (robust)
+    try:
+        auc_roc = float(roc_auc_score(labels, scores))
+    except Exception:
+        auc_roc = float('nan')
+
+    # ROC curve arrays
+    # thresholds are in score-space; convert to distance-space via d = -threshold_score.
+    fpr_arr, tpr_arr, thresholds_score = roc_curve(labels, scores)
+    far_arr = fpr_arr
+    frr_arr = 1.0 - tpr_arr
+    d_arr = (-thresholds_score)
+
+    # EER: point where FAR ~= FRR
+    eer_idx = int(np.argmin(np.abs(far_arr - frr_arr)))
+    eer_far = float(far_arr[eer_idx])
+    eer_frr = float(frr_arr[eer_idx])
+    eer = float((eer_far + eer_frr) / 2.0)
+    d_optimal_eer = float(d_arr[eer_idx])
+
+    # Best-accuracy threshold: sweep candidate distance thresholds.
+    # Keep this consistent with repo semantics: pred genuine if distance <= d.
     max_acc = 0.0
-    min_frr = 1.0
     min_far = 1.0
-    min_dif = 1.0
-    d_optimal = 0.0
-    d_optimal_eer = 0.0
-    
-    tpr_arr, fpr_arr, far_arr, frr_arr, d_arr = [], [], [], [], []
-    
-    for d in np.arange(dmin, dmax + step, step):
-        idx1 = predictions.ravel() <= d     # pred = 1 (genuine)
-        idx2 = predictions.ravel() > d      # pred = 0 (forged)
-        
+    min_frr = 1.0
+    d_optimal = float('nan')
+
+    # Candidate thresholds: unique predicted distances + endpoints.
+    # This is much cheaper than dense stepping and is exact for best-acc.
+    unique_d = np.unique(predictions)
+    # If extremely large, subsample to keep it fast.
+    if unique_d.size > 50000:
+        unique_d = np.quantile(unique_d, np.linspace(0, 1, 50000))
+    for d in unique_d:
+        idx1 = predictions <= d
+        idx2 = ~idx1
         tp = float(np.sum(labels[idx1] == 1))
         tn = float(np.sum(labels[idx2] == 0))
-        
-        tpr = tp / nsame
-        tnr = tn / ndiff
-        
-        frr = float(np.sum(labels[idx2] == 1)) / nsame
-        far = float(np.sum(labels[idx1] == 0)) / ndiff
-        
-        tpr_arr.append(tpr)
-        fpr_arr.append(1 - tnr)  # FPR = 1 - TNR for ROC
-        far_arr.append(far)
-        frr_arr.append(frr)
-        d_arr.append(d)
-        
-        acc = (tp + tn) / (nsame + ndiff)
-        
-        # Track best accuracy
+        acc = (tp + tn) / float(nsame + ndiff)
         if acc > max_acc:
             max_acc = acc
-            d_optimal = d
-            min_frr = frr
-            min_far = far
-        
-        # Track EER (where FAR ≈ FRR)
-        if abs(far - frr) < min_dif:
-            min_dif = abs(far - frr)
-            d_optimal_eer = d
-            eer_frr = frr
-            eer_far = far
-    
-    # Compute AUC of ROC curve
-    # Sort by FPR and compute area under curve
-    fpr_sorted = sorted(set(fpr_arr))
-    tpr_interp = []
-    for fpr_val in fpr_sorted:
-        idx = fpr_arr.index(fpr_val)
-        tpr_interp.append(tpr_arr[idx])
-    
-    auc_roc = auc(fpr_sorted, tpr_interp) if len(fpr_sorted) > 1 else 0.0
-    
-    eer = (eer_frr + eer_far) / 2.0
+            d_optimal = float(d)
+            min_frr = float(np.sum(labels[idx2] == 1)) / float(nsame) if nsame > 0 else 0.0
+            min_far = float(np.sum(labels[idx1] == 0)) / float(ndiff) if ndiff > 0 else 0.0
     
     metrics = {
-        "best_acc": max_acc,
-        "best_frr": min_frr,
-        "best_far": min_far,
-        "eer": eer,
-        "eer_frr": eer_frr,
-        "eer_far": eer_far,
-        "auc_roc": auc_roc,
-        "tpr_arr": tpr_arr,
-        "far_arr": far_arr,
-        "frr_arr": frr_arr,
-        "fpr_arr": fpr_arr,
-        "d_arr": d_arr,
-        "d_optimal": d_optimal,
-        "d_optimal_eer": d_optimal_eer
+        "best_acc": float(max_acc),
+        "best_frr": float(min_frr),
+        "best_far": float(min_far),
+        "eer": float(eer),
+        "eer_frr": float(eer_frr),
+        "eer_far": float(eer_far),
+        "auc_roc": float(auc_roc) if not np.isnan(auc_roc) else float('nan'),
+        "tpr_arr": tpr_arr.tolist(),
+        "far_arr": far_arr.tolist(),
+        "frr_arr": frr_arr.tolist(),
+        "fpr_arr": fpr_arr.tolist(),
+        "d_arr": d_arr.tolist(),
+        "d_optimal": float(d_optimal) if d_optimal == d_optimal else float('nan'),
+        "d_optimal_eer": float(d_optimal_eer),
     }
-    
-    print(f"📊 Metrics: ACC={max_acc:.4f}, EER={(eer_frr+eer_far)/2.0:.4f} @d={d_optimal_eer:.4f}, AUC={auc_roc:.4f}")
+
+    print(
+        "📊 Metrics: "
+        f"ACC={metrics['best_acc']:.4f} @d={metrics['d_optimal']:.6f} | "
+        f"EER={metrics['eer']:.4f} @d={metrics['d_optimal_eer']:.6f} | "
+        f"AUC={metrics['auc_roc']:.4f}"
+    )
     
     return metrics
 
@@ -335,22 +339,18 @@ def evaluate_at_threshold(predictions, labels, threshold, step=None):
     except:
         auc_roc = float('nan')
     
-    # Compute EER and ROC arrays for full curve
-    fpr, tpr, thresholds = roc_curve(labels, -predictions)
-    frr_arr = 1 - tpr
+    # Compute EER and ROC arrays for full curve (thresholds in score-space)
+    fpr, tpr, thresholds_score = roc_curve(labels, -predictions)
+    frr_arr = 1.0 - tpr
     far_arr = fpr
-    
-    # Find EER (where FAR = FRR)
-    eer = float('nan')
-    eer_far = float('nan')
-    eer_frr = float('nan')
-    for i in range(len(far_arr)):
-        if abs(far_arr[i] - frr_arr[i]) < abs(eer - eer_far) if not np.isnan(eer) else True:
-            eer = (far_arr[i] + frr_arr[i]) / 2.0
-            eer_far = far_arr[i]
-            eer_frr = frr_arr[i]
-    
-    d_arr = -predictions[np.argsort(predictions)]
+
+    eer_idx = int(np.argmin(np.abs(far_arr - frr_arr)))
+    eer_far = float(far_arr[eer_idx])
+    eer_frr = float(frr_arr[eer_idx])
+    eer = float((eer_far + eer_frr) / 2.0)
+
+    d_arr = (-thresholds_score)
+    d_optimal_eer = float(d_arr[eer_idx])
     
     metrics = {
         "best_acc": acc,
@@ -367,12 +367,117 @@ def evaluate_at_threshold(predictions, labels, threshold, step=None):
         "fpr_arr": fpr.tolist(),
         "d_arr": d_arr.tolist(),
         "d_optimal": float(threshold),
-        "d_optimal_eer": float(threshold)
+        "d_optimal_eer": d_optimal_eer
     }
     
     print(f"📊 Fixed Threshold Metrics @d={threshold:.6f}: ACC={acc:.4f}, FAR={far:.4f}, FRR={frr:.4f}, AUC={auc_roc:.4f}, EER={eer:.4f}")
     
     return metrics
+
+
+def train_one_epoch_mixed(
+    model,
+    primary_loader,
+    replay_loader,
+    optimizer,
+    loss_fn,
+    device='cuda',
+    *,
+    primary_steps_per_replay=4,
+    max_steps=None,
+):
+    """Train one epoch while mixing two dataloaders (for replay / anti-forgetting).
+
+    Semantics:
+    - Run `primary_steps_per_replay` batches from primary, then 1 batch from replay.
+    - If `max_steps` is set, stop after that many optimizer steps.
+    """
+
+    model.train()
+    total_loss = 0.0
+    num_steps = 0
+    primary_consumed = 0
+
+    primary_iter = iter(primary_loader)
+    replay_iter = iter(replay_loader)
+
+    if max_steps is None:
+        replay_steps_expected = int(np.ceil(len(primary_loader) / float(primary_steps_per_replay)))
+        pbar_total = len(primary_loader) + replay_steps_expected
+    else:
+        pbar_total = max_steps
+    pbar = tqdm(total=pbar_total, desc="Training (mixed)")
+    while True:
+        if max_steps is not None and num_steps >= max_steps:
+            break
+
+        # Primary batches
+        for _ in range(primary_steps_per_replay):
+            if max_steps is not None and num_steps >= max_steps:
+                break
+            try:
+                batch_data = next(primary_iter)
+            except StopIteration:
+                return (total_loss / num_steps) if num_steps > 0 else 0.0
+
+            if len(batch_data) == 3:
+                images, labels, _ = batch_data
+            else:
+                images, labels = batch_data
+
+            images = images.to(device)
+            labels = labels.to(device)
+            labels = labels.view(labels.shape[0], -1)[:, :1].float()
+
+            optimizer.zero_grad()
+            _, loss = model(images, labels)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            total_loss += float(loss.item())
+            num_steps += 1
+            primary_consumed += 1
+            pbar.update(1)
+            pbar.set_postfix({'loss': float(loss.item())})
+
+        # If we've exhausted the primary loader, end the epoch without forcing an extra replay step.
+        if max_steps is None and primary_consumed >= len(primary_loader):
+            break
+
+        # Replay batch
+        if max_steps is not None and num_steps >= max_steps:
+            break
+        try:
+            batch_data = next(replay_iter)
+        except StopIteration:
+            replay_iter = iter(replay_loader)
+            batch_data = next(replay_iter)
+
+        if len(batch_data) == 3:
+            images, labels, _ = batch_data
+        else:
+            images, labels = batch_data
+
+        images = images.to(device)
+        labels = labels.to(device)
+        labels = labels.view(labels.shape[0], -1)[:, :1].float()
+
+        optimizer.zero_grad()
+        _, loss = model(images, labels)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        total_loss += float(loss.item())
+        num_steps += 1
+        pbar.update(1)
+        pbar.set_postfix({'loss': float(loss.item())})
+
+        if max_steps is None and primary_consumed >= len(primary_loader):
+            break
+
+    return (total_loss / num_steps) if num_steps > 0 else 0.0
 
 
 def plot_training_history(history, output_path=None):
