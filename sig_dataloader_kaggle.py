@@ -249,36 +249,27 @@ class SigDataset_GDPS_Kaggle(Dataset):
             print(f"    Make sure to run generate_gdps_pairs() first to create pair files")
             self.img_dict = {}
         else:
-            # Pre-read which writer folders we need (from pair file)
-            writers_needed = set()
+            # Collect all unique image paths referenced in the pair file (both columns)
+            rel_paths_needed = set()
             with open(pair_path, 'r') as f:
                 for line in f:
-                    parts = line.strip().split('\t')  # Use tab as delimiter to handle filenames with spaces
+                    parts = line.strip().split('\t')
                     if len(parts) >= 2:
-                        refer = parts[0]  # e.g., "test/1/genuine/img.jpg"
-                        # Pair files are written with os.path.join(), so separators can vary
-                        refer_parts = refer.replace('\\', '/').split('/')
-                        if len(refer_parts) >= 2:
-                            writers_needed.add(refer_parts[1])  # extract "1" from "test/1/genuine/..."
-            
-            # Pre-cache only the writer folders we need
-            # First collect all image paths
+                        # Normalize separators to os.sep for consistent lookup
+                        rel_paths_needed.add(parts[0].replace('\\', '/').replace('/', os.sep))
+                        rel_paths_needed.add(parts[1].replace('\\', '/').replace('/', os.sep))
+
+            # Pre-cache only the images we actually need
             img_paths_to_load = []
-            for root, dirs, files in os.walk(data_root):
-                rel_root = os.path.relpath(root, data_root)
-                # Extract writer ID from path: "test/1" or "train/1"
-                parts = rel_root.split(os.sep)
-                if len(parts) >= 2 and parts[1] in writers_needed:
-                    for img in files:
-                        if img.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            img_paths_to_load.append(os.path.join(root, img))
-            
-            # Then load all images with a single progress bar
-            for img_path in tqdm(img_paths_to_load, desc="Loading GDPS images", unit="img"):
-                sig_image, _ = imread_tool(img_path)
+            for rel_path in rel_paths_needed:
+                full_path = os.path.join(data_root, rel_path)
+                if os.path.exists(full_path):
+                    img_paths_to_load.append((rel_path, full_path))
+
+            # Load images with a single progress bar
+            for rel_path, full_path in tqdm(img_paths_to_load, desc="Loading GDPS images", unit="img"):
+                sig_image, _ = imread_tool(full_path)
                 sig_image = self.basic_transforms(sig_image)
-                # Store with full path relative to image_root
-                rel_path = os.path.relpath(img_path, data_root)
                 self.img_dict[rel_path] = sig_image
         
         if pair_path is None or not os.path.exists(pair_path):
@@ -300,8 +291,8 @@ class SigDataset_GDPS_Kaggle(Dataset):
                     continue
                 
                 try:
-                    refer = parts[0]  # e.g., "test/1/genuine/img.jpg"
-                    test = parts[1]
+                    refer = parts[0].replace('\\', '/').replace('/', os.sep)
+                    test  = parts[1].replace('\\', '/').replace('/', os.sep)
                     label = parts[2]
                     
                     # Paths from pair file are already relative to image_root
