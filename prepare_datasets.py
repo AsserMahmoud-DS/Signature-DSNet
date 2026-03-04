@@ -227,8 +227,8 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
         # Extract writer ID from filename and organize by writer
         for sig_path in train_genuine:
             filename = os.path.basename(sig_path)
-            # Extract first 3 digits as writer ID (e.g., c001_001.jpg -> 001)
-            match = re.match(r'c(\d{3})', filename)
+            # Format: c-032-11 (Copy).jpg → writer ID is 032
+            match = re.match(r'c-(\d+)-', filename)
             if match:
                 writer_id = match.group(1)
                 if writer_id not in train_by_writer:
@@ -237,8 +237,8 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
         
         for sig_path in train_forged:
             filename = os.path.basename(sig_path)
-            # Extract writer ID from cf format (e.g., cf001_001.jpg -> 001)
-            match = re.match(r'cf(\d{3})', filename)
+            # Format: cf-012-13 (Copy).jpg → writer ID is 012
+            match = re.match(r'cf-(\d+)-', filename)
             if match:
                 writer_id = match.group(1)
                 if writer_id not in train_by_writer:
