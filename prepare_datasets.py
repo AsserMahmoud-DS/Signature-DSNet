@@ -5,6 +5,7 @@ Creates gray_train.txt and gray_test.txt with format: refer_path test_path label
 
 import os
 import json
+import re
 from pathlib import Path
 from itertools import combinations, product
 from tqdm import tqdm
@@ -122,16 +123,28 @@ def generate_cedar_pairs(data_root, train_ratio=0.73, random_state=42):
     }
 
 
-def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42, positive_ratio=0.5):
+def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
     """
     Generate train/test pair files for GDPS dataset.
     
     GDPS structure:
-    - train/: writer folders OR flat (handled here)
-    - test/: subject_id/genuine/ and subject_id/forge/
+    - train/: FLAT structure
+      - genuine/    (all genuine images: c*.jpg)
+      - forge/      (all forged images: cf*.jpg)
+    - test/: HIERARCHICAL structure
+      - 1/, 2/, 3/, ... (subject folders)
+        - Each subject folder:
+          - genuine/  (c*.jpg)
+          - forge/    (cf*.jpg)
+    
+    Pair file paths are relative to GDPS_ROOT:
+      Train: train/genuine/c001001.jpg train/genuine/c001002.jpg 1
+      Test:  test/1/genuine/c001001.jpg test/1/genuine/c001002.jpg 1
     
     Args:
-        positive_ratio: Target ratio of positive (genuine) pairs (0.33 for 67% forged, 0.5 for balanced)
+        data_root: Path to GDPS root directory
+        train_ratio: Not used (for compatibility)
+        random_state: Random seed for reproducibility
     """
     
     train_path = os.path.join(data_root, "train")
@@ -205,80 +218,70 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42, positive_ra
     print(f"GDPS: {len(train_genuine)} train genuine, {len(train_forged)} train forged")
     print(f"GDPS: {len(test_sigs)} test subjects")
     
-    # Generate training pairs (from flat train structure)
+    # Generate training pairs (per-writer to avoid cross-writer pairs)
     def generate_train_pairs():
-        """
-        Load train signatures organized by writer.
-        Expected structure: train/writer_id/genuine/ and train/writer_id/forge/
-        """
+        """Generate train pairs by organizing signatures by writer ID from filename."""
         pairs = []
-        import random
-        random.seed(random_state)
+        train_by_writer = {}  # {writer_id: {'genuine': [...], 'forge': [...]}}
         
-        # If train is flat (train/genuine/ and train/forge/), convert to per-writer
-        # Otherwise, iterate through train/writer_id/ folders
+        # Extract writer ID from filename and organize by writer
+        for sig_path in train_genuine:
+            filename = os.path.basename(sig_path)
+            # Extract first 3 digits as writer ID (e.g., c001_001.jpg -> 001)
+            match = re.match(r'c(\d{3})', filename)
+            if match:
+                writer_id = match.group(1)
+                if writer_id not in train_by_writer:
+                    train_by_writer[writer_id] = {'genuine': [], 'forge': []}
+                train_by_writer[writer_id]['genuine'].append(sig_path)
         
-        writer_dirs = sorted([d for d in os.listdir(train_path) 
-                              if os.path.isdir(os.path.join(train_path, d)) and d.isdigit()])
+        for sig_path in train_forged:
+            filename = os.path.basename(sig_path)
+            # Extract writer ID from cf format (e.g., cf001_001.jpg -> 001)
+            match = re.match(r'cf(\d{3})', filename)
+            if match:
+                writer_id = match.group(1)
+                if writer_id not in train_by_writer:
+                    train_by_writer[writer_id] = {'genuine': [], 'forge': []}
+                train_by_writer[writer_id]['forge'].append(sig_path)
         
-        if writer_dirs:
-            # Per-writer training structure
-            for writer_id in tqdm(writer_dirs, desc="generating train pairs (per-writer)"):
-                writer_path = os.path.join(train_path, writer_id)
-                
-                gen_list = []
-                forg_list = []
-                
-                # Load genuine
-                gen_folder = os.path.join(writer_path, "genuine")
-                if os.path.isdir(gen_folder):
-                    for img in sorted(os.listdir(gen_folder)):
-                        if img.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            rel_path = os.path.join("train", writer_id, "genuine", img)
-                            gen_list.append(rel_path)
-                
-                # Load forged
-                forge_folder = os.path.join(writer_path, "forge")
-                if os.path.isdir(forge_folder):
-                    for img in sorted(os.listdir(forge_folder)):
-                        if img.lower().endswith(('.png', '.jpg', '.jpeg')):
-                            rel_path = os.path.join("train", writer_id, "forge", img)
-                            forg_list.append(rel_path)
-                
-                if len(gen_list) < 2:
-                    continue
-                
-                # Positive pairs: genuine-to-genuine
-                positive_pairs = []
-                for i in range(len(gen_list)):
-                    for j in range(i + 1, len(gen_list)):
-                        positive_pairs.append((gen_list[i], gen_list[j], 1))
-                
-                # Negative pairs: genuine-to-forged
-                negative_pairs = []
-                for i in range(len(gen_list)):
-                    for j in range(len(forg_list)):
-                        negative_pairs.append((gen_list[i], forg_list[j], 0))
-                
-                # Balance: subsample negatives to match ratio
-                if positive_ratio < 1.0 and len(negative_pairs) > 0:
-                    target_negatives = int(len(positive_pairs) / positive_ratio) - len(positive_pairs)
-                    if target_negatives > 0 and len(negative_pairs) > target_negatives:
-                        negative_pairs = random.sample(negative_pairs, target_negatives)
-                
-                pairs.extend(positive_pairs)
-                pairs.extend(negative_pairs)
-        
-        else:
-            # Flat training structure (fallback - NOT recommended for writer-specific model)
-            print("⚠️  WARNING: Using flat train structure. This creates artificial cross-writer pairs!")
-            gen_list, forg_list = load_train_signatures()
+        # Generate pairs per writer
+        for writer_id in tqdm(sorted(train_by_writer.keys()), desc="generating train pairs (per-writer)"):
+            gen_list = train_by_writer[writer_id]['genuine']
+            forg_list = train_by_writer[writer_id]['forge']
             
-            # Same logic as before
+            if len(gen_list) < 2:
+                continue
+            
+            # Positive pairs: genuine-to-genuine from same writer
             for i in range(len(gen_list)):
                 for j in range(i + 1, len(gen_list)):
                     pairs.append((gen_list[i], gen_list[j], 1))
             
+            # Negative pairs: genuine-to-forged from same writer
+            for i in range(len(gen_list)):
+                for j in range(len(forg_list)):
+                    pairs.append((gen_list[i], forg_list[j], 0))
+        
+        return pairs
+    
+    # Generate test pairs (from hierarchical test structure)
+    def generate_test_pairs():
+        pairs = []
+        
+        for subject_id in tqdm(sorted(test_sigs.keys()), desc="generating test pairs"):
+            gen_list = test_sigs[subject_id]['genuine']
+            forg_list = test_sigs[subject_id]['forge']
+            
+            if len(gen_list) < 2:
+                continue  # Skip subjects with < 2 genuine signatures
+            
+            # Positive pairs: genuine-to-genuine from same subject
+            for i in range(len(gen_list)):
+                for j in range(i + 1, len(gen_list)):
+                    pairs.append((gen_list[i], gen_list[j], 1))
+            
+            # Negative pairs: genuine-to-forged from same subject
             for i in range(len(gen_list)):
                 for j in range(len(forg_list)):
                     pairs.append((gen_list[i], forg_list[j], 0))
