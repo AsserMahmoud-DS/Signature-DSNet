@@ -127,126 +127,137 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
     Generate train/test pair files for GDPS dataset.
     
     GDPS structure:
-    - train/: writer folders (1/ to N/)
-      - Each writer folder: genuine/ and forge/
-      - Images are .jpg files
-    - test/: writer folders (1/ to M/)
-      - Each writer folder: genuine/ and forge/
-      - Images are .jpg files
+    - train/: FLAT structure
+      - genuine/    (all genuine images: c*.jpg)
+      - forge/      (all forged images: cf*.jpg)
+    - test/: HIERARCHICAL structure
+      - 1/, 2/, 3/, ... (subject folders)
+        - Each subject folder:
+          - genuine/  (c*.jpg)
+          - forge/    (cf*.jpg)
     
-    Pair file paths are relative to GDPS_ROOT and include "train/" or "test/" prefix:
-      e.g. train/1/genuine/c001001.jpg train/1/genuine/c001002.jpg 1
-      or   test/1/genuine/c001001.jpg test/1/genuine/c001002.jpg 1
+    Pair file paths are relative to GDPS_ROOT:
+      Train: train/genuine/c001001.jpg train/genuine/c001002.jpg 1
+      Test:  test/1/genuine/c001001.jpg test/1/genuine/c001002.jpg 1
     
     Args:
         data_root: Path to GDPS root directory
-        train_ratio: Proportion of writers for training (only used if both train/ and test/ exist)
+        train_ratio: Not used (for compatibility)
         random_state: Random seed for reproducibility
     """
     
     train_path = os.path.join(data_root, "train")
     test_path = os.path.join(data_root, "test")
     
-    # Helper function to load signatures from a dataset split (train or test)
-    def load_signatures_from_split(split_path, split_name):
-        """Load signatures from train/ or test/ folder"""
-        genuine_sigs = {}  # {writer_id: [rel_paths]}
-        forged_sigs = {}   # {writer_id: [rel_paths]}
+    # Load training signatures (flat structure: train/genuine/ and train/forge/)
+    def load_train_signatures():
+        """Load train signatures from flat train/{genuine,forge}/ structure"""
+        genuine_sigs = []
+        forged_sigs = []
         
-        if not os.path.isdir(split_path):
-            return genuine_sigs, forged_sigs
+        genuine_folder = os.path.join(train_path, "genuine")
+        forge_folder = os.path.join(train_path, "forge")
         
-        for writer_dir in sorted(os.listdir(split_path)):
-            writer_path = os.path.join(split_path, writer_dir)
-            if not os.path.isdir(writer_path):
-                continue
-            
-            try:
-                writer_id = int(writer_dir)
-            except ValueError:
-                continue
-            
-            genuine_sigs[writer_id] = []
-            forged_sigs[writer_id] = []
-            
-            # Scan genuine and forge folders
-            genuine_folder = os.path.join(writer_path, "genuine")
-            forge_folder = os.path.join(writer_path, "forge")
-            
-            if os.path.isdir(genuine_folder):
-                for img_file in os.listdir(genuine_folder):
-                    if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                        rel_path = os.path.join(split_name, writer_dir, "genuine", img_file)
-                        genuine_sigs[writer_id].append(rel_path)
-            
-            if os.path.isdir(forge_folder):
-                for img_file in os.listdir(forge_folder):
-                    if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                        rel_path = os.path.join(split_name, writer_dir, "forge", img_file)
-                        forged_sigs[writer_id].append(rel_path)
+        if os.path.isdir(genuine_folder):
+            for img_file in sorted(os.listdir(genuine_folder)):
+                if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    rel_path = os.path.join("train", "genuine", img_file)
+                    genuine_sigs.append(rel_path)
+        
+        if os.path.isdir(forge_folder):
+            for img_file in sorted(os.listdir(forge_folder)):
+                if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    rel_path = os.path.join("train", "forge", img_file)
+                    forged_sigs.append(rel_path)
         
         return genuine_sigs, forged_sigs
     
-    # Load signatures from both train and test splits
-    train_genuine, train_forged = load_signatures_from_split(train_path, "train")
-    test_genuine, test_forged = load_signatures_from_split(test_path, "test")
+    # Load test signatures (hierarchical structure: test/subject_id/{genuine,forge}/)
+    def load_test_signatures():
+        """Load test signatures from hierarchical test/subject_id/{genuine,forge}/ structure"""
+        test_sigs = {}  # {subject_id: {'genuine': [...], 'forge': [...]}}
+        
+        if not os.path.isdir(test_path):
+            return test_sigs
+        
+        for subject_dir in sorted(os.listdir(test_path)):
+            subject_path = os.path.join(test_path, subject_dir)
+            if not os.path.isdir(subject_path):
+                continue
+            
+            try:
+                subject_id = int(subject_dir)
+            except ValueError:
+                continue
+            
+            test_sigs[subject_id] = {'genuine': [], 'forge': []}
+            
+            # Scan genuine folder
+            genuine_folder = os.path.join(subject_path, "genuine")
+            if os.path.isdir(genuine_folder):
+                for img_file in sorted(os.listdir(genuine_folder)):
+                    if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        rel_path = os.path.join("test", subject_dir, "genuine", img_file)
+                        test_sigs[subject_id]['genuine'].append(rel_path)
+            
+            # Scan forge folder
+            forge_folder = os.path.join(subject_path, "forge")
+            if os.path.isdir(forge_folder):
+                for img_file in sorted(os.listdir(forge_folder)):
+                    if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        rel_path = os.path.join("test", subject_dir, "forge", img_file)
+                        test_sigs[subject_id]['forge'].append(rel_path)
+        
+        return test_sigs
     
-    # If we have both splits, use them as-is; otherwise use all writers from whichever split exists
-    if train_genuine and test_genuine:
-        # Both splits exist - use them directly
-        train_writers = sorted(train_genuine.keys())
-        test_writers = sorted(test_genuine.keys())
-        
-        genuine_sigs_train = train_genuine
-        forged_sigs_train = train_forged
-        genuine_sigs_test = test_genuine
-        forged_sigs_test = test_forged
-    else:
-        # Only one split exists (e.g., only test/) - split writers
-        genuine_sigs = train_genuine if train_genuine else test_genuine
-        forged_sigs = train_forged if train_forged else test_forged
-        
-        all_writers = sorted(genuine_sigs.keys())
-        num_train = int(len(all_writers) * train_ratio)
-        
-        import random
-        random.seed(random_state)
-        train_writers = sorted(random.sample(all_writers, num_train))
-        test_writers = sorted(set(all_writers) - set(train_writers))
-        
-        # For this case, data comes from the same source
-        genuine_sigs_train = genuine_sigs
-        forged_sigs_train = forged_sigs
-        genuine_sigs_test = genuine_sigs
-        forged_sigs_test = forged_sigs
+    # Load signatures
+    train_genuine, train_forged = load_train_signatures()
+    test_sigs = load_test_signatures()
     
-    print(f"GDPS: {len(train_writers)} train writers, {len(test_writers)} test writers")
+    print(f"GDPS: {len(train_genuine)} train genuine, {len(train_forged)} train forged")
+    print(f"GDPS: {len(test_sigs)} test subjects")
     
-    # Generate positive and negative pairs
-    def generate_pairs_for_split(writers, genuine_sigs, forged_sigs, is_train=True):
+    # Generate training pairs (from flat train structure)
+    def generate_train_pairs():
         pairs = []
         
-        for writer_id in tqdm(writers, desc=f"generating {'train' if is_train else 'test'} pairs"):
-            gen_list = genuine_sigs.get(writer_id, [])
-            forg_list = forged_sigs.get(writer_id, [])
+        # Positive pairs: genuine-to-genuine from training set
+        for i in tqdm(range(len(train_genuine)), desc="generating train genuine-genuine pairs"):
+            for j in range(i + 1, len(train_genuine)):
+                pairs.append((train_genuine[i], train_genuine[j], 1))
+        
+        # Negative pairs: genuine-to-forged from training set
+        for i in tqdm(range(len(train_genuine)), desc="generating train genuine-forge pairs"):
+            for j in range(len(train_forged)):
+                pairs.append((train_genuine[i], train_forged[j], 0))
+        
+        return pairs
+    
+    # Generate test pairs (from hierarchical test structure)
+    def generate_test_pairs():
+        pairs = []
+        
+        for subject_id in tqdm(sorted(test_sigs.keys()), desc="generating test pairs"):
+            gen_list = test_sigs[subject_id]['genuine']
+            forg_list = test_sigs[subject_id]['forge']
             
             if len(gen_list) < 2:
-                continue  # Skip writers with < 2 genuine signatures
+                continue  # Skip subjects with < 2 genuine signatures
             
-            # Positive pairs: genuine-to-genuine from same writer
+            # Positive pairs: genuine-to-genuine from same subject
             for i in range(len(gen_list)):
                 for j in range(i + 1, len(gen_list)):
                     pairs.append((gen_list[i], gen_list[j], 1))
             
-            # Negative pairs: genuine-to-forged from same writer
+            # Negative pairs: genuine-to-forged from same subject
             for i in range(len(gen_list)):
                 for j in range(len(forg_list)):
                     pairs.append((gen_list[i], forg_list[j], 0))
         
         return pairs
     
-    train_pairs = generate_pairs_for_split(train_writers, genuine_sigs_train, forged_sigs_train, is_train=True)
-    test_pairs = generate_pairs_for_split(test_writers, genuine_sigs_test, forged_sigs_test, is_train=False)
+    train_pairs = generate_train_pairs()
+    test_pairs = generate_test_pairs()
     
     # Write pair files to GDPS_ROOT (tab-separated to handle filenames with spaces)
     train_txt = os.path.join(data_root, "gray_train.txt")
@@ -268,8 +279,9 @@ def generate_gdps_pairs(data_root, train_ratio=0.7, random_state=42):
         'test_file': test_txt,
         'num_train_pairs': len(train_pairs),
         'num_test_pairs': len(test_pairs),
-        'train_writers': train_writers,
-        'test_writers': test_writers
+        'num_train_genuine': len(train_genuine),
+        'num_train_forged': len(train_forged),
+        'num_test_subjects': len(test_sigs)
     }
 
 
