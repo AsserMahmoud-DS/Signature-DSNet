@@ -13,7 +13,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
-def save_checkpoint(save_path, epoch, model, optimizer, scheduler, best_loss, history, args=None):
+def save_checkpoint(save_path, epoch, model, optimizer, scheduler, best_loss, history, args=None, best_eer=None):
     """
     Save training checkpoint for resuming later.
     
@@ -26,6 +26,7 @@ def save_checkpoint(save_path, epoch, model, optimizer, scheduler, best_loss, hi
         best_loss: Best validation loss so far
         history: Training history dict (losses, metrics)
         args: Optional dict of training arguments
+        best_eer: Best validation EER so far (optional, for EER-based model selection)
     """
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
@@ -35,6 +36,7 @@ def save_checkpoint(save_path, epoch, model, optimizer, scheduler, best_loss, hi
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict(),
         'best_loss': best_loss,
+        'best_eer': best_eer,
         'history': history,
     }
     
@@ -65,6 +67,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, devi
     
     epoch = checkpoint.get('epoch', 0)
     best_loss = checkpoint.get('best_loss', float('inf'))
+    best_eer = checkpoint.get('best_eer', float('inf'))  # float('inf') for old checkpoints without EER
     history = checkpoint.get('history', {})
     args = checkpoint.get('args', {})
     
@@ -75,9 +78,9 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, devi
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     
     print(f"📂 Checkpoint loaded: {checkpoint_path}")
-    print(f"   Resuming from epoch {epoch + 1}, best loss: {best_loss:.6f}")
+    print(f"   Resuming from epoch {epoch + 1}, best loss: {best_loss:.6f}, best EER: {best_eer:.6f}")
     
-    return epoch, best_loss, history, args
+    return epoch, best_loss, best_eer, history, args
 
 
 def compute_metrics(predictions, labels, step=None):
