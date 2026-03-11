@@ -291,10 +291,13 @@ class Mixer(nn.Module):
         self.proj = nn.Conv2d(low_dim+high_dim*2, dim, kernel_size=1, stride=1, padding=0)
         self.proj_drop = nn.Dropout(proj_drop)
 
-        self.devide_module_type = 'dwt' # 'v1' or 'v2' or 'v3' or 'dwt'
+        self.devide_module_type = kwargs.get('devide_module_type', 'dwt_full')
+        # Keep backward compatibility with older config values.
+        if self.devide_module_type == 'dwt':
+            self.devide_module_type = 'dwt_full'
         self.pool = nn.AvgPool2d(pool_size, stride=pool_size, padding=0, count_include_pad=False) if pool_size > 1 else nn.Identity()
         self.uppool = nn.Upsample(scale_factor=pool_size, mode='nearest') if pool_size > 1 else nn.Identity()
-        if self.devide_module_type in {'v2', 'v3', 'dwt'}:
+        if self.devide_module_type in {'v2', 'v3', 'dwt_full', 'dwt_ll_only'}:
             self.reduce_h = nn.Conv2d(dim, high_dim, 1)
             self.reduce_l = nn.Conv2d(dim, low_dim, 1)
         self.pool_size = pool_size
@@ -359,6 +362,20 @@ class Mixer(nn.Module):
         hx = self.reduce_h(hx)
         lx = self.reduce_l(lx)
         return hx, lx
+
+    def devide_freq_dwt_ll_only(self, x):
+        if self.pool_size > 1 and x.shape[-2] % 2 == 0 and x.shape[-1] % 2 == 0:
+            ll, _, _, _ = haar_dwt2d(x)
+            lx = ll
+            # LL-only low-pass branch: keep high branch as residual detail.
+            hx = x - self.uppool(ll)
+        else:
+            hx, lx = self.devide_freq_v3(x)
+            return hx, lx
+
+        hx = self.reduce_h(hx)
+        lx = self.reduce_l(lx)
+        return hx, lx
     
     def forward(self, x):
         B, H, W, C = x.shape
@@ -373,8 +390,12 @@ class Mixer(nn.Module):
                 hx, lx = self.devide_freq_v2(x)
         elif self.devide_module_type == 'v3':
             hx, lx = self.devide_freq_v3(x)
-        elif self.devide_module_type == 'dwt':
+        elif self.devide_module_type == 'dwt_full':
             hx, lx = self.devide_freq_dwt(x)
+        elif self.devide_module_type == 'dwt_ll_only':
+            hx, lx = self.devide_freq_dwt_ll_only(x)
+        else:
+            raise ValueError(f"Unknown devide_module_type: {self.devide_module_type}")
 
         hx = self.high_mixer(hx)
         lx = self.low_mixer(lx)
@@ -392,12 +413,21 @@ class Block(nn.Module):
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, attention_head=1, pool_size=2,
                  attn=Mixer, 
                  use_layer_scale=False, layer_scale_init_value=1e-5, 
+                 devide_module_type='dwt_full',
                  ):
         super().__init__()
         
         self.norm1 = norm_layer(dim)
         
-        self.attn = attn(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, attention_head=attention_head, pool_size=pool_size,)
+        self.attn = attn(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            attn_drop=attn_drop,
+            attention_head=attention_head,
+            pool_size=pool_size,
+            devide_module_type=devide_module_type,
+        )
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -432,6 +462,7 @@ class Transformer(nn.Module):
                  attention_heads=None,
                  use_layer_scale=False, layer_scale_init_value=1e-5, 
                  checkpoint_path=None,
+                 devide_module_type='dwt_full',
                  **kwargs, 
                  ):
         
@@ -454,7 +485,8 @@ class Transformer(nn.Module):
         self.blocks1 = nn.Sequential(*[
             Block(
                 dim=embed_dims[0], num_heads=num_heads[0], mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
-                attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, attention_head=attention_heads[i], pool_size=2,)
+                attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer,
+                attention_head=attention_heads[i], pool_size=2, devide_module_type=devide_module_type,)
                 # use_layer_scale=use_layer_scale, layer_scale_init_value=layer_scale_init_value, 
                 # )
             for i in range(0, st2_idx)])
@@ -466,7 +498,8 @@ class Transformer(nn.Module):
         self.blocks2 = nn.Sequential(*[
             Block(
                 dim=embed_dims[1], num_heads=num_heads[1], mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
-                attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, attention_head=attention_heads[i], pool_size=2,)
+                attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer,
+                attention_head=attention_heads[i], pool_size=2, devide_module_type=devide_module_type,)
                 # use_layer_scale=use_layer_scale, layer_scale_init_value=layer_scale_init_value, channel_layer_scale=channel_layer_scale,
                 # )
             for i in range(st2_idx,st3_idx)])
@@ -478,6 +511,7 @@ class Transformer(nn.Module):
             Block(
                 dim=embed_dims[2], num_heads=num_heads[2], mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
                 attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, attention_head=attention_heads[i], pool_size=1,
+                devide_module_type=devide_module_type,
                 use_layer_scale=use_layer_scale, layer_scale_init_value=layer_scale_init_value, 
                 )
             for i in range(st3_idx, st4_idx)])
@@ -489,6 +523,7 @@ class Transformer(nn.Module):
             Block(
                 dim=embed_dims[3], num_heads=num_heads[3], mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
                 attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, attention_head=attention_heads[i], pool_size=1,
+                devide_module_type=devide_module_type,
                 use_layer_scale=use_layer_scale, layer_scale_init_value=layer_scale_init_value, 
                 )
             for i in range(st4_idx,depth)])
