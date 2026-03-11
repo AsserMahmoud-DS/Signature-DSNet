@@ -80,7 +80,8 @@ class ViT_for_OSV_DSNet(nn.Module):
     def __init__(self, opt):
         super(ViT_for_OSV_DSNet, self).__init__()
         from models.dsnet.transformer_DWT import dsnet
-        self.model = dsnet()
+        dwt_split_mode = getattr(opt, 'dwt_split_mode', 'dwt_full')
+        self.model = dsnet(devide_module_type=dwt_split_mode)
         #checkpoint = torch.load("pretrain weight")
         #self.model.load_state_dict(checkpoint, strict=False)
         ###
