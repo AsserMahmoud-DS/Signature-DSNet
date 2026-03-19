@@ -6,6 +6,8 @@
 
 This project extends the original DetailSemNet repository with a **memory-efficient Colab-ready fine-tuning pipeline** that adapts a pretrained Hindi signature model to new datasets (CEDAR, GDPS, Bengali) using **head-only transfer learning**. All original paper methodology is preserved while enabling seamless training on resource-constrained cloud environments.
 
+This repo now also includes a **writer-independent GPDS split pipeline** for leakage-safe train/val/test protocol and capped prototype subsets for mixed CEDAR+GPDS training.
+
 ### What's New vs. Original Repo
 
 | Aspect | Original Repo | This Project | Benefit |
@@ -16,6 +18,7 @@ This project extends the original DetailSemNet repository with a **memory-effici
 | **Transfer Learning** | Not provided | Head-only fine-tuning | Prevent catastrophic forgetting |
 | **Checkpointing** | Manual management | Auto save/resume | Handle disconnects gracefully |
 | **Datasets** | Single dataset at a time | Multi-dataset support | Cross-validation |
+| **GPDS Split Strategy** | Pair-level split assumptions | Writer-first train/val/test split | Prevent identity leakage |
 
 ---
 
@@ -111,6 +114,52 @@ PART 8-10: Evaluation & visualization
 - **File format output**: `refer_path test_path label` (space-separated, one pair per line)
 - **Why needed**: Dataloaders depend on these pair files; without them, training fails at loader initialization
 
+#### **[Infrastructure] `prepare_datasets_WI.py`** (NEW)
+- **What it does**: Adds writer-independent GPDS splitting and subset sampling utilities while preserving compatibility with existing pair-file based loaders.
+- **Core functions**:
+  - `generate_gdps_pairs(data_root, train_ratio, val_ratio_within_heldout, random_state, target_train_pairs, target_val_pairs, target_test_pairs, train_filename, val_filename, test_filename)`
+    - Collects GPDS signatures by writer across the existing folder structure.
+    - Splits writers into train writers and held-out writers.
+    - Splits held-out writers into validation writers and test writers.
+    - Generates within-writer positive/negative pairs for each split.
+    - Optionally caps pair counts for prototype mode.
+    - Writes pair files such as `gray_train_30k.txt`, `gray_val_15k.txt`, `gray_test.txt`.
+  - `sample_pair_file(src_pair_file, dst_pair_file, target_count, random_state)`
+    - Downsamples an existing pair file while approximately preserving class ratio.
+    - Used for CEDAR prototype subset generation (example: `gray_train_10k.txt`).
+- **Compatibility**:
+  - Keeps pair-file format unchanged (tab-separated: `refer_path test_path label`).
+  - Integrates directly with `SigDataset_*` loaders via pair filename selection.
+- **How to use**:
+  ```python
+  from prepare_datasets_WI import generate_cedar_pairs, generate_gdps_pairs, sample_pair_file
+
+  # CEDAR canonical pairs
+  cedar_info = generate_cedar_pairs("/kaggle/working/cedar_signatures")
+
+  # CEDAR train subset (10k)
+  cedar_subset_info = sample_pair_file(
+      src_pair_file="/kaggle/working/cedar_signatures/gray_train.txt",
+      dst_pair_file="/kaggle/working/cedar_signatures/gray_train_10k.txt",
+      target_count=10000,
+      random_state=42,
+  )
+
+  # GPDS writer-disjoint train/val/test with caps
+  gpds_info = generate_gdps_pairs(
+      data_root="/kaggle/working/GPDS_signatures2",
+      train_ratio=0.7,
+      val_ratio_within_heldout=0.5,
+      random_state=42,
+      target_train_pairs=30000,
+      target_val_pairs=15000,
+      target_test_pairs=None,
+      train_filename="gray_train_30k.txt",
+      val_filename="gray_val_15k.txt",
+      test_filename="gray_test.txt",
+  )
+  ```
+
 #### **[Memory Optimization] `sig_dataloader_colab.py`** (NEW)
 - **What it does**: Memory-efficient replacements for original `sig_dataloader_v2.py` classes
 - **Classes**:
@@ -149,6 +198,9 @@ PART 8-10: Evaluation & visualization
 - **Memory requirement**: ~500MB for CEDAR, ~2GB for GDPS (feasible on Kaggle's 16GB+ RAM)
 - **When to use**: Kaggle notebooks, local machines with sufficient RAM, or any environment where speed > memory
 - **Key difference from original**: Kaggle version uses separate `image_root` and `pair_root` parameters for flexible data organization
+- **Recent integration update**:
+  - `SigDataset_CEDAR_Kaggle`, `SigDataset_CEDAR_Kaggle_Lite`, and `SigDataset_GDPS_Kaggle` now accept optional `pair_filename`.
+  - This allows switching between prototype files (`gray_train_30k.txt`, `gray_val_15k.txt`, `gray_train_10k.txt`) and full files without dataloader refactoring.
 
 #### **[Transfer Learning] `models/fine_tune_utils.py`** (NEW)
 - **What it does**: Implements head-only fine-tuning strategy for transfer learning
@@ -290,7 +342,7 @@ optimizer = build_optimizer_for_head_only(model, lr_head=1e-4)
 1. Download datasets from Google Drive (CEDAR.zip, GDPS.zip, model.pt)
 2. Clone repo: git clone https://github.com/AsserMahmoud-DS/Signature-DSNet
 3. Install packages: pip install -r requirements.txt
-4. Import all modules (training_utils, fine_tune_utils, dataloaders)
+4. Import all modules (training_utils, fine_tune_utils, dataloaders, prepare_datasets_WI)
 ```
 
 ### **PART 4: Load Model + Head-Only Setup (2 min)**
@@ -306,14 +358,15 @@ optimizer = build_optimizer_for_head_only(model, lr_head=1e-4)
 
 ### **PART 5: Create Data Loaders (1 min)**
 ```
-1. Generate pairs: prepare_datasets.generate_cedar_pairs(...)
-   └─ Creates gray_train.txt, gray_test.txt in CEDAR/
-2. Load datasets:
-   ├─ train_set = SigDataset_CEDAR_Colab(args, path=..., train=True)
-   ├─ test_set = SigDataset_CEDAR_Colab(args, path=..., train=False)
-3. Create loaders:
-   ├─ train_loader = DataLoader(train_set, batch_size=8, shuffle=True)
-   └─ test_loader = DataLoader(test_set, batch_size=8, shuffle=False)
+1. Generate CEDAR canonical pairs and GPDS writer-disjoint train/val/test pairs.
+2. Optionally build capped prototype files:
+  ├─ GPDS: gray_train_30k.txt, gray_val_15k.txt
+  └─ CEDAR: gray_train_10k.txt
+3. Load datasets with `pair_filename` where needed:
+  ├─ GPDS train loader from gray_train_30k.txt
+  ├─ GPDS val loader from gray_val_15k.txt
+  ├─ CEDAR replay loader from gray_train_10k.txt
+  └─ Test loaders from GPDS gray_test.txt and CEDAR gray_test.txt
 ```
 
 ### **PART 6: Initialize Training (1 min)**
@@ -329,10 +382,11 @@ optimizer = build_optimizer_for_head_only(model, lr_head=1e-4)
 ### **PART 7: Fine-tune (30-90 min per 25 epochs)**
 ```
 for epoch in range(start_epoch, num_epochs):
-    1. train_loss = train_one_epoch(model, train_loader, ...)
-    2. val_loss, val_metrics = validate(model, test_loader, ...)
+   1. train_loss = train_one_epoch_mixed(model, gpds_train_loader, cedar_replay_loader, ...)
+     # with primary_steps_per_replay=3 for 3:1 GPDS:CEDAR updates
+   2. val_loss, val_metrics = validate(model, gpds_val_loader, ...)
     3. save_checkpoint(...)  # Every epoch
-    4. if val_loss improved > 5%:
+   4. if val EER improved:
        └─ save_checkpoint(...) as best_model.pt
     5. if no improvement × 10 epochs:
        └─ early_stop()
@@ -342,8 +396,13 @@ for epoch in range(start_epoch, num_epochs):
 ### **PART 8-10: Evaluate & Export (10 min)**
 ```
 1. Load best model
-2. Evaluate on CEDAR test set → print metrics
-3. Evaluate on GDPS, Bengali (if available)
+2. Load GPDS validation threshold (tau_eer) from best epoch
+3. Evaluate on GPDS test and CEDAR test separately:
+  ├─ search-threshold metrics (debug)
+  └─ fixed-threshold metrics at GPDS tau_eer (reportable)
+4. Evaluate pooled mixed test (GPDS + CEDAR concatenated):
+  ├─ search-threshold metrics (debug)
+  └─ fixed-threshold metrics at GPDS tau_eer (reportable)
 4. plot_training_history() → save curves
 5. save_metrics_json() → export results
 ```
