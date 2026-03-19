@@ -17,7 +17,7 @@ def imread_tool(img_path):
 
 
 class SigDataset_CEDAR_Kaggle(Dataset):
-    def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized'):
+    def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized', pair_filename=None):
         self.image_root = image_root
         self.pair_root = pair_root
         self.image_size = image_size
@@ -37,7 +37,9 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         
         data_root = image_root
 
-        if train:
+        if pair_filename is not None:
+            pair_path = os.path.join(pair_root, pair_filename)
+        elif train:
             pair_path = os.path.join(pair_root, "gray_train.txt")
             if opt and hasattr(opt, 'part') and opt.part:
                 pair_path = os.path.join(pair_root, "gray_train_part.txt")
@@ -106,7 +108,7 @@ class SigDataset_CEDAR_Kaggle(Dataset):
 
 
 class SigDataset_CEDAR_Kaggle_Lite(Dataset):
-    def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized'):
+    def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized', pair_filename=None):
         """RAM-cached CEDAR loader that only caches images referenced by the pair file.
 
         Differences vs `SigDataset_CEDAR_Kaggle`:
@@ -138,7 +140,9 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
 
         data_root = image_root
 
-        if train:
+        if pair_filename is not None:
+            pair_path = os.path.join(pair_root, pair_filename)
+        elif train:
             pair_path = os.path.join(pair_root, "gray_train.txt")
             if opt and hasattr(opt, 'part') and opt.part:
                 pair_path = os.path.join(pair_root, "gray_train_part.txt")
@@ -210,7 +214,7 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
 
 
 class SigDataset_GDPS_Kaggle(Dataset):
-    def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized'):
+    def __init__(self, opt, image_root, pair_root, train=True, image_size=256, mode='normalized', pair_filename=None):
         self.image_root = image_root
         self.pair_root = pair_root
         self.image_size = image_size
@@ -233,7 +237,9 @@ class SigDataset_GDPS_Kaggle(Dataset):
         data_root = image_root
         pair_path = None
         
-        if train:
+        if pair_filename is not None:
+            pair_path = os.path.join(pair_root, pair_filename)
+        elif train:
             pair_path = os.path.join(pair_root, "gray_train.txt")
             if opt and hasattr(opt, 'part') and opt.part:
                 pair_path = os.path.join(pair_root, "gray_train_part.txt")
