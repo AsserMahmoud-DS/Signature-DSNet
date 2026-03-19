@@ -10,6 +10,7 @@ Writer-independent pair generation for signature datasets.
 import os
 import re
 import random
+from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 from tqdm import tqdm
@@ -149,20 +150,122 @@ def _generate_pairs_for_writers(
     return pairs
 
 
+def _sample_pairs_with_label_ratio(
+    pairs: List[Tuple[str, str, int]],
+    target_count: Optional[int],
+    random_state: int,
+    split_name: str,
+) -> List[Tuple[str, str, int]]:
+    """Downsample pairs while approximately preserving original class ratio."""
+    if target_count is None or target_count <= 0 or target_count >= len(pairs):
+        return pairs
+
+    rng = random.Random(random_state)
+    pos_pairs = [p for p in pairs if p[2] == 1]
+    neg_pairs = [p for p in pairs if p[2] == 0]
+
+    if len(pos_pairs) == 0 or len(neg_pairs) == 0:
+        sampled = pairs[:]
+        rng.shuffle(sampled)
+        sampled = sampled[:target_count]
+        print(
+            f"{split_name}: capped to {len(sampled)} pairs without stratification "
+            f"(single-class source)."
+        )
+        return sampled
+
+    total = len(pairs)
+    target_pos = int(round(target_count * (len(pos_pairs) / total)))
+    target_pos = max(1, min(target_pos, len(pos_pairs), target_count - 1))
+    target_neg = target_count - target_pos
+
+    if target_neg > len(neg_pairs):
+        target_neg = len(neg_pairs)
+        target_pos = min(target_count - target_neg, len(pos_pairs))
+    if target_pos > len(pos_pairs):
+        target_pos = len(pos_pairs)
+        target_neg = min(target_count - target_pos, len(neg_pairs))
+
+    sampled = rng.sample(pos_pairs, target_pos) + rng.sample(neg_pairs, target_neg)
+    rng.shuffle(sampled)
+
+    label_counts = Counter([p[2] for p in sampled])
+    print(
+        f"{split_name}: capped to {len(sampled)} pairs "
+        f"(pos={label_counts.get(1, 0)}, neg={label_counts.get(0, 0)})"
+    )
+    return sampled
+
+
+def _write_pairs(pair_file: str, pairs: List[Tuple[str, str, int]]) -> None:
+    with open(pair_file, "w") as f:
+        for refer, test, label in pairs:
+            f.write(f"{refer}\t{test}\t{label}\n")
+
+
+def sample_pair_file(
+    src_pair_file: str,
+    dst_pair_file: str,
+    target_count: int,
+    random_state: int = 42,
+) -> Dict[str, object]:
+    """Create a smaller pair file by sampling while preserving class ratio."""
+    if target_count <= 0:
+        raise ValueError("target_count must be > 0")
+    if not os.path.exists(src_pair_file):
+        raise FileNotFoundError(f"Source pair file not found: {src_pair_file}")
+
+    pairs: List[Tuple[str, str, int]] = []
+    with open(src_pair_file, "r") as f:
+        for line_num, line in enumerate(f, 1):
+            parts = line.strip().split("\t")
+            if len(parts) < 3:
+                if len(parts) > 0:
+                    print(f"⚠️  Skipping malformed line {line_num}: {line.strip()[:80]}")
+                continue
+            refer, test, label = parts[0], parts[1], int(parts[2])
+            pairs.append((refer, test, label))
+
+    sampled = _sample_pairs_with_label_ratio(
+        pairs,
+        target_count=target_count,
+        random_state=random_state,
+        split_name="pair-file sample",
+    )
+    _write_pairs(dst_pair_file, sampled)
+
+    counts = Counter([p[2] for p in sampled])
+    return {
+        "src_pair_file": src_pair_file,
+        "dst_pair_file": dst_pair_file,
+        "target_count": target_count,
+        "num_source_pairs": len(pairs),
+        "num_written_pairs": len(sampled),
+        "num_pos_pairs": counts.get(1, 0),
+        "num_neg_pairs": counts.get(0, 0),
+    }
+
+
 def generate_gdps_pairs(
     data_root: str,
     train_ratio: float = 0.7,
+    val_ratio_within_heldout: float = 0.5,
     random_state: int = 42,
+    target_train_pairs: Optional[int] = None,
+    target_val_pairs: Optional[int] = None,
+    target_test_pairs: Optional[int] = None,
+    train_filename: str = "gray_train.txt",
+    val_filename: str = "gray_val.txt",
+    test_filename: str = "gray_test.txt",
 ):
-    """Generate train/test pair files for GDPS with writer-independent split.
+    """Generate train/val/test pair files for GDPS with writer-independent split.
 
     Strategy:
     1) Collect all signatures from both current train/ and test/ folders by writer ID.
-    2) Split writer IDs into train/test by `train_ratio`.
-    3) Generate within-writer positive/negative pairs for each split.
-
-    Note:
-    - Your validation split can be derived from this new test set (e.g., split test pairs in half).
+    2) Split writer IDs into train vs held-out by `train_ratio`.
+    3) Split held-out writers into val vs test by `val_ratio_within_heldout`.
+    4) Generate within-writer positive/negative pairs for each split.
+    5) Optionally cap each split by target pair counts.
     """
 
     writer_map = _collect_gdps_signatures_by_writer(data_root)
@@ -171,45 +274,97 @@ def generate_gdps_pairs(
     if len(all_writers) == 0:
         raise RuntimeError(f"No GDPS writers found under: {data_root}")
 
-    random.seed(random_state)
-    n_train = int(len(all_writers) * train_ratio)
-    train_writers = sorted(random.sample(all_writers, n_train), key=lambda x: int(x))
-    test_writers = sorted(set(all_writers) - set(train_writers), key=lambda x: int(x))
+    if not (0.0 < train_ratio < 1.0):
+        raise ValueError("train_ratio must be in (0, 1)")
+    if not (0.0 < val_ratio_within_heldout < 1.0):
+        raise ValueError("val_ratio_within_heldout must be in (0, 1)")
+
+    rng = random.Random(random_state)
+    all_writers_shuffled = all_writers[:]
+    rng.shuffle(all_writers_shuffled)
+
+    n_total = len(all_writers_shuffled)
+    n_train = int(round(n_total * train_ratio))
+    n_train = max(1, min(n_train, n_total - 2))
+
+    train_writers = sorted(all_writers_shuffled[:n_train], key=lambda x: int(x))
+    heldout_writers = sorted(all_writers_shuffled[n_train:], key=lambda x: int(x))
+
+    n_heldout = len(heldout_writers)
+    n_val = int(round(n_heldout * val_ratio_within_heldout))
+    n_val = max(1, min(n_val, n_heldout - 1))
+
+    heldout_shuffled = heldout_writers[:]
+    rng.shuffle(heldout_shuffled)
+    val_writers = sorted(heldout_shuffled[:n_val], key=lambda x: int(x))
+    test_writers = sorted(heldout_shuffled[n_val:], key=lambda x: int(x))
 
     print(f"GDPS-WI: total writers={len(all_writers)}")
-    print(f"GDPS-WI: train writers={len(train_writers)}, test writers={len(test_writers)}")
+    print(
+        f"GDPS-WI: train writers={len(train_writers)}, "
+        f"val writers={len(val_writers)}, test writers={len(test_writers)}"
+    )
 
     # Lightweight data sanity summary.
     train_sig_count = sum(len(writer_map[w]["genuine"]) + len(writer_map[w]["forge"]) for w in train_writers)
+    val_sig_count = sum(len(writer_map[w]["genuine"]) + len(writer_map[w]["forge"]) for w in val_writers)
     test_sig_count = sum(len(writer_map[w]["genuine"]) + len(writer_map[w]["forge"]) for w in test_writers)
-    print(f"GDPS-WI: signatures in train writers={train_sig_count}, test writers={test_sig_count}")
+    print(
+        f"GDPS-WI: signatures in train writers={train_sig_count}, "
+        f"val writers={val_sig_count}, test writers={test_sig_count}"
+    )
 
-    train_pairs = _generate_pairs_for_writers(writer_map, train_writers, "train")
-    test_pairs = _generate_pairs_for_writers(writer_map, test_writers, "test")
+    train_pairs_full = _generate_pairs_for_writers(writer_map, train_writers, "train")
+    val_pairs_full = _generate_pairs_for_writers(writer_map, val_writers, "val")
+    test_pairs_full = _generate_pairs_for_writers(writer_map, test_writers, "test")
 
-    train_txt = os.path.join(data_root, "gray_train.txt")
-    test_txt = os.path.join(data_root, "gray_test.txt")
+    train_pairs = _sample_pairs_with_label_ratio(
+        train_pairs_full,
+        target_count=target_train_pairs,
+        random_state=random_state + 11,
+        split_name="train",
+    )
+    val_pairs = _sample_pairs_with_label_ratio(
+        val_pairs_full,
+        target_count=target_val_pairs,
+        random_state=random_state + 17,
+        split_name="val",
+    )
+    test_pairs = _sample_pairs_with_label_ratio(
+        test_pairs_full,
+        target_count=target_test_pairs,
+        random_state=random_state + 23,
+        split_name="test",
+    )
 
-    with open(train_txt, "w") as f:
-        for refer, test, label in train_pairs:
-            f.write(f"{refer}\t{test}\t{label}\n")
+    train_txt = os.path.join(data_root, train_filename)
+    val_txt = os.path.join(data_root, val_filename)
+    test_txt = os.path.join(data_root, test_filename)
 
-    with open(test_txt, "w") as f:
-        for refer, test, label in test_pairs:
-            f.write(f"{refer}\t{test}\t{label}\n")
+    _write_pairs(train_txt, train_pairs)
+    _write_pairs(val_txt, val_pairs)
+    _write_pairs(test_txt, test_pairs)
 
     print(f"✅ Generated {train_txt}: {len(train_pairs)} pairs")
+    print(f"✅ Generated {val_txt}: {len(val_pairs)} pairs")
     print(f"✅ Generated {test_txt}: {len(test_pairs)} pairs")
 
     return {
         "train_file": train_txt,
+        "val_file": val_txt,
         "test_file": test_txt,
         "num_total_writers": len(all_writers),
         "num_train_writers": len(train_writers),
+        "num_val_writers": len(val_writers),
         "num_test_writers": len(test_writers),
         "train_writers": train_writers,
+        "val_writers": val_writers,
         "test_writers": test_writers,
+        "num_train_pairs_full": len(train_pairs_full),
+        "num_val_pairs_full": len(val_pairs_full),
+        "num_test_pairs_full": len(test_pairs_full),
         "num_train_pairs": len(train_pairs),
+        "num_val_pairs": len(val_pairs),
         "num_test_pairs": len(test_pairs),
     }
 
@@ -229,10 +384,34 @@ if __name__ == "__main__":
         help="Writer-level train ratio for GDPS split (default: 0.7)",
     )
     parser.add_argument(
+        "--val-ratio-heldout",
+        type=float,
+        default=0.5,
+        help="Val-writer ratio inside held-out writers (default: 0.5)",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
         help="Random seed for writer split",
+    )
+    parser.add_argument(
+        "--target-train-pairs",
+        type=int,
+        default=None,
+        help="Optional cap for generated train pairs",
+    )
+    parser.add_argument(
+        "--target-val-pairs",
+        type=int,
+        default=None,
+        help="Optional cap for generated val pairs",
+    )
+    parser.add_argument(
+        "--target-test-pairs",
+        type=int,
+        default=None,
+        help="Optional cap for generated test pairs",
     )
 
     args = parser.parse_args()
@@ -245,5 +424,9 @@ if __name__ == "__main__":
         generate_gdps_pairs(
             data_root=args.gdps,
             train_ratio=args.train_ratio,
+            val_ratio_within_heldout=args.val_ratio_heldout,
             random_state=args.seed,
+            target_train_pairs=args.target_train_pairs,
+            target_val_pairs=args.target_val_pairs,
+            target_test_pairs=args.target_test_pairs,
         )
