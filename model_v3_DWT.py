@@ -200,7 +200,7 @@ class ViT_for_OSV_DSNet(nn.Module):
 
 class Normal_emb_ViT_for_OSV_DSNet(nn.Module):
     def __init__(self, opt):
-        super(ViT_for_OSV_DSNet, self).__init__()
+        super(Normal_emb_ViT_for_OSV_DSNet, self).__init__()
         from models.dsnet.transformer_DWT import dsnet
         dwt_split_mode = getattr(opt, 'dwt_split_mode', 'dwt_full')
         self.model = dsnet(devide_module_type=dwt_split_mode)
