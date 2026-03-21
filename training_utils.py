@@ -13,6 +13,74 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 
+def _init_margin_stats_acc():
+    return {
+        'pos_sum': 0.0,
+        'pos_count': 0,
+        'pos_max': float('-inf'),
+        'neg_sum': 0.0,
+        'neg_count': 0,
+        'neg_min': float('inf'),
+        'pos_violate_margin1_count': 0,
+        'neg_violate_margin_count': 0,
+    }
+
+
+def _accumulate_margin_stats(acc, distances, labels, margin=None, margin_1=None):
+    dist = distances.detach().view(-1)
+    lab = labels.detach().view(-1)
+
+    pos_mask = lab >= 0.5
+    neg_mask = ~pos_mask
+
+    pos_dist = dist[pos_mask]
+    neg_dist = dist[neg_mask]
+
+    if pos_dist.numel() > 0:
+        acc['pos_sum'] += float(pos_dist.sum().item())
+        acc['pos_count'] += int(pos_dist.numel())
+        acc['pos_max'] = max(acc['pos_max'], float(pos_dist.max().item()))
+        if margin_1 is not None:
+            acc['pos_violate_margin1_count'] += int((pos_dist > margin_1).sum().item())
+
+    if neg_dist.numel() > 0:
+        acc['neg_sum'] += float(neg_dist.sum().item())
+        acc['neg_count'] += int(neg_dist.numel())
+        acc['neg_min'] = min(acc['neg_min'], float(neg_dist.min().item()))
+        if margin is not None:
+            acc['neg_violate_margin_count'] += int((neg_dist < margin).sum().item())
+
+
+def _finalize_margin_stats(acc):
+    pos_count = acc['pos_count']
+    neg_count = acc['neg_count']
+
+    pos_mean = (acc['pos_sum'] / pos_count) if pos_count > 0 else 0.0
+    neg_mean = (acc['neg_sum'] / neg_count) if neg_count > 0 else 0.0
+
+    pos_max = acc['pos_max'] if pos_count > 0 else 0.0
+    neg_min = acc['neg_min'] if neg_count > 0 else 0.0
+
+    pos_margin1_violation_rate = (
+        acc['pos_violate_margin1_count'] / pos_count if pos_count > 0 else 0.0
+    )
+    neg_margin_violation_rate = (
+        acc['neg_violate_margin_count'] / neg_count if neg_count > 0 else 0.0
+    )
+
+    return {
+        'pos_mean': float(pos_mean),
+        'neg_mean': float(neg_mean),
+        'pos_max': float(pos_max),
+        'neg_min': float(neg_min),
+        'pos_count': int(pos_count),
+        'neg_count': int(neg_count),
+        'mean_gap_neg_minus_pos': float(neg_mean - pos_mean),
+        'pos_margin1_violation_rate': float(pos_margin1_violation_rate),
+        'neg_margin_violation_rate': float(neg_margin_violation_rate),
+    }
+
+
 def save_checkpoint(save_path, epoch, model, optimizer, scheduler, best_loss, history, args=None, best_eer=None):
     """
     Save training checkpoint for resuming later.
@@ -196,7 +264,16 @@ def compute_metrics(predictions, labels, step=None):
     return metrics
 
 
-def train_one_epoch(model, train_loader, optimizer, loss_fn, device='cuda', shift_aug=False):
+def train_one_epoch(
+    model,
+    train_loader,
+    optimizer,
+    loss_fn,
+    device='cuda',
+    shift_aug=False,
+    log_margin_stats=False,
+    return_margin_stats=False,
+):
     """
     Run one training epoch.
     
@@ -215,6 +292,10 @@ def train_one_epoch(model, train_loader, optimizer, loss_fn, device='cuda', shif
     total_loss = 0.0
     num_batches = 0
     
+    margin_stats_acc = _init_margin_stats_acc() if (log_margin_stats or return_margin_stats) else None
+    margin = getattr(loss_fn, 'margin', None)
+    margin_1 = getattr(loss_fn, 'margin_1', None)
+
     pbar = tqdm(train_loader, desc="Training")
     for batch_idx, batch_data in enumerate(pbar):
         if len(batch_data) == 3:
@@ -232,6 +313,9 @@ def train_one_epoch(model, train_loader, optimizer, loss_fn, device='cuda', shif
         
         # Forward pass
         outputs, loss = model(images, labels)
+
+        if margin_stats_acc is not None:
+            _accumulate_margin_stats(margin_stats_acc, outputs, labels, margin=margin, margin_1=margin_1)
         
         # Backward pass
         loss.backward()
@@ -244,6 +328,29 @@ def train_one_epoch(model, train_loader, optimizer, loss_fn, device='cuda', shif
         pbar.set_postfix({'loss': loss.item()})
     
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+
+    if margin_stats_acc is not None:
+        margin_stats = _finalize_margin_stats(margin_stats_acc)
+        if log_margin_stats:
+            print(
+                "📏 Margin stats: "
+                f"pos_mean={margin_stats['pos_mean']:.4f}, "
+                f"neg_mean={margin_stats['neg_mean']:.4f}, "
+                f"pos_max={margin_stats['pos_max']:.4f}, "
+                f"neg_min={margin_stats['neg_min']:.4f}, "
+                f"gap(neg-pos)={margin_stats['mean_gap_neg_minus_pos']:.4f}"
+            )
+            if margin_1 is not None:
+                print(
+                    f"   pos>d1({margin_1:.4f}) rate={margin_stats['pos_margin1_violation_rate']:.4f}"
+                )
+            if margin is not None:
+                print(
+                    f"   neg<d2({margin:.4f}) rate={margin_stats['neg_margin_violation_rate']:.4f}"
+                )
+        if return_margin_stats:
+            return avg_loss, margin_stats
+
     return avg_loss
 
 
@@ -388,6 +495,8 @@ def train_one_epoch_mixed(
     *,
     primary_steps_per_replay=4,
     max_steps=None,
+    log_margin_stats=False,
+    return_margin_stats=False,
 ):
     """Train one epoch while mixing two dataloaders (for replay / anti-forgetting).
 
@@ -403,6 +512,9 @@ def train_one_epoch_mixed(
 
     primary_iter = iter(primary_loader)
     replay_iter = iter(replay_loader)
+    margin_stats_acc = _init_margin_stats_acc() if (log_margin_stats or return_margin_stats) else None
+    margin = getattr(loss_fn, 'margin', None)
+    margin_1 = getattr(loss_fn, 'margin_1', None)
 
     if max_steps is None:
         replay_steps_expected = int(np.ceil(len(primary_loader) / float(primary_steps_per_replay)))
@@ -433,7 +545,9 @@ def train_one_epoch_mixed(
             labels = labels.view(labels.shape[0], -1)[:, :1].float()
 
             optimizer.zero_grad()
-            _, loss = model(images, labels)
+            outputs, loss = model(images, labels)
+            if margin_stats_acc is not None:
+                _accumulate_margin_stats(margin_stats_acc, outputs, labels, margin=margin, margin_1=margin_1)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -467,7 +581,9 @@ def train_one_epoch_mixed(
         labels = labels.view(labels.shape[0], -1)[:, :1].float()
 
         optimizer.zero_grad()
-        _, loss = model(images, labels)
+        outputs, loss = model(images, labels)
+        if margin_stats_acc is not None:
+            _accumulate_margin_stats(margin_stats_acc, outputs, labels, margin=margin, margin_1=margin_1)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -480,7 +596,31 @@ def train_one_epoch_mixed(
         if max_steps is None and primary_consumed >= len(primary_loader):
             break
 
-    return (total_loss / num_steps) if num_steps > 0 else 0.0
+    avg_loss = (total_loss / num_steps) if num_steps > 0 else 0.0
+
+    if margin_stats_acc is not None:
+        margin_stats = _finalize_margin_stats(margin_stats_acc)
+        if log_margin_stats:
+            print(
+                "📏 Margin stats (mixed): "
+                f"pos_mean={margin_stats['pos_mean']:.4f}, "
+                f"neg_mean={margin_stats['neg_mean']:.4f}, "
+                f"pos_max={margin_stats['pos_max']:.4f}, "
+                f"neg_min={margin_stats['neg_min']:.4f}, "
+                f"gap(neg-pos)={margin_stats['mean_gap_neg_minus_pos']:.4f}"
+            )
+            if margin_1 is not None:
+                print(
+                    f"   pos>d1({margin_1:.4f}) rate={margin_stats['pos_margin1_violation_rate']:.4f}"
+                )
+            if margin is not None:
+                print(
+                    f"   neg<d2({margin:.4f}) rate={margin_stats['neg_margin_violation_rate']:.4f}"
+                )
+        if return_margin_stats:
+            return avg_loss, margin_stats
+
+    return avg_loss
 
 
 def plot_training_history(history, output_path=None):
