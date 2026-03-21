@@ -195,3 +195,135 @@ class ViT_for_OSV_DSNet(nn.Module):
     
     def save_to_file(self, file_path: str) -> None:
         torch.save(self.state_dict(), file_path)
+
+
+
+class Normal_emb_ViT_for_OSV_DSNet(nn.Module):
+    def __init__(self, opt):
+        super(ViT_for_OSV_DSNet, self).__init__()
+        from models.dsnet.transformer_DWT import dsnet
+        dwt_split_mode = getattr(opt, 'dwt_split_mode', 'dwt_full')
+        self.model = dsnet(devide_module_type=dwt_split_mode)
+        #checkpoint = torch.load("pretrain weight")
+        #self.model.load_state_dict(checkpoint, strict=False)
+        ###
+        self.model.patch_embed.proj1 = nn.Conv2d(1, 48, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+        
+        self.model.head = nn.Identity()
+        
+        self.head_str = nn.Linear(384, 96) if opt.emd else nn.Identity()
+        
+        self.pdist = nn.PairwiseDistance(p=2, keepdim = True)
+        
+        self.dmloss = ContrastiveLoss()
+        self.bceloss = nn.BCELoss()
+        
+        self.opt = opt
+        
+    def forward_one(self, x, masks):
+        # stage 1
+        x = self.model.patch_embed(x)
+        B, H, W, C = x.shape
+        x = x + self.model._get_pos_embed(self.model.pos_embed1, self.model.num_patches1, H, W) 
+        x, hx, lx = self.model.blocks1(x)
+        
+        # stage 2
+        x = x.permute(0, 3, 1, 2)       
+        x = self.model.patch_embed2(x)
+        B, H, W, C = x.shape
+        x = x + self.model._get_pos_embed(self.model.pos_embed2, self.model.num_patches2, H, W) 
+        x, hx, lx = self.model.blocks2(x)
+        
+        # stage 3
+        x = x.permute(0, 3, 1, 2)  
+        x = self.model.patch_embed3(x)
+        B, H, W, C = x.shape
+        x = x + self.model._get_pos_embed(self.model.pos_embed3, self.model.num_patches3, H, W) 
+        x, hx, lx = self.model.blocks3(x)
+        
+        # stage 4
+        x = x.permute(0, 3, 1, 2)  
+        x = self.model.patch_embed4(x)
+        B, H, W, C = x.shape
+        x = x + self.model._get_pos_embed(self.model.pos_embed4, self.model.num_patches4, H, W) 
+        x, hx, lx = self.model.blocks4(x)
+        x = x.flatten(1,2)
+        
+        min_mask = masks.min() + 1e-5
+        masks = masks.ge(min_mask)
+        x_patch_new_ = nn.utils.rnn.pad_sequence([r[m] for r, m in zip(x, masks)], batch_first=True)
+        
+        x_patch_new_ = self.head_str(x_patch_new_)
+        x = self.model.norm(x)
+        
+        x_reg = x_patch_new_
+        return x, x_patch_new_, masks, x_reg # training times
+    
+    def forward(self, x, Y):
+        batch_size, _, h, w = x.shape # [batch_size, 2, h, w]
+        x1 = x[:, 0, :, :].unsqueeze(1)
+        x2 = x[:, 1, :, :].unsqueeze(1)
+        
+        ###
+        x_mask_tmp = F.interpolate(x, size=[7,7], mode='area')
+        #x_mask_tmp = F.interpolate(x, size=[14,14], mode='area')
+        x_mask_tmp = rearrange(x_mask_tmp, 'b c h w -> b c (h w)')
+        mask_1, mask_2 = x_mask_tmp[:, 0,], x_mask_tmp[:, 1,]
+        
+        #out1, masks1, attn_weight1 = self.forward_one(x1, mask_1)
+        #out2, masks2, attn_weight2 = self.forward_one(x2, mask_2)
+        
+        out1, out1_, masks1, x_reg1 = self.forward_one(x1, mask_1) 
+        out2, out2_, masks2, x_reg2 = self.forward_one(x2, mask_2) 
+        #class_token_1 = out1.mean(1) 
+        #class_token_2 = out2.mean(1) 
+         
+        # add (linear) head 
+        class_token_1 = self.model.head(out1.mean(1)) 
+        class_token_2 = self.model.head(out2.mean(1)) 
+ 
+        # normalize embeddings 
+        class_token_1 = F.normalize(class_token_1, p=2, dim=1) 
+        class_token_2 = F.normalize(class_token_2, p=2, dim=1) 
+         
+        #class_token_1 = out1_.mean(1) 
+        #class_token_2 = out2_.mean(1) 
+ 
+        #class_token_1, out1_ = out1[:, 0], out1[:, 1:] 
+        #class_token_2, out2_ = out2[:, 0], out2[:, 1:] 
+         
+        B, S1, C = out1_.shape 
+        B, S2, C = out2_.shape 
+        preds_str = 0 
+        eps = 5e-2 if self.training else 5e-8 # 5e-2, 5e-4, 5e-6 
+        #eps = 5e-8 
+ 
+         
+        out1_ = F.normalize(out1_, p=2, dim=-1) 
+        out2_ = F.normalize(out2_, p=2, dim=-1) 
+ 
+        if self.opt.emd and S1 != 0 and S2 != 0: # train with emd, if no only token selection 
+            preds_str, transport, cost = EMD_batched(out1_, out2_, dis_type=self.opt.dis_type, mar_type = self.opt.mar_type, input_pair=x, eps=eps) # mar_type = 'uniform_v2' 
+         
+        if self.opt.gol_dis == 'l2': 
+            preds_gol = self.pdist(class_token_1, class_token_2) 
+        elif self.opt.gol_dis == 'cos': 
+            preds_gol = 1 - F.cosine_similarity(class_token_1[:,None,:], class_token_2[:,None,:], dim=-1) 
+        else: 
+            return NameError 
+         
+        if self.opt.emd: 
+            preds_str *= self.opt.temp 
+            out = preds_gol + preds_str 
+            #out = preds_str 
+        else: 
+            out = preds_gol 
+         
+        final_loss = self.dmloss(out, Y.float()) # original 
+        return out, final_loss
+        #return out, final_loss, class_token_1-class_token_2
+        #return (preds_gol, preds_str), final_loss
+    
+    def save_to_file(self, file_path: str) -> None:
+        torch.save(self.state_dict(), file_path)
+
