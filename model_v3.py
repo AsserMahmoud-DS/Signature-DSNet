@@ -92,7 +92,10 @@ class ViT_for_OSV_DSNet(nn.Module):
         
         self.pdist = nn.PairwiseDistance(p=2, keepdim = True)
         
-        self.dmloss = ContrastiveLoss()
+        # Allow notebook/runtime configs to control the contrastive margins.
+        loss_margin = getattr(opt, 'loss_margin', 0.9)
+        loss_margin_1 = getattr(opt, 'loss_margin_1', 0.3)
+        self.dmloss = ContrastiveLoss(margin=loss_margin, margin_1=loss_margin_1)
         self.bceloss = nn.BCELoss()
         
         self.opt = opt
@@ -200,6 +203,10 @@ class ViT_for_OSV_DSNet_Normal_emb(ViT_for_OSV_DSNet):
     def __init__(self, opt):
         super(ViT_for_OSV_DSNet_Normal_emb, self).__init__(opt)
         self.normalize_embeddings = getattr(opt, 'normalize_embeddings', True)
+        # Keep margin control explicit for the normalized variant too.
+        loss_margin = getattr(opt, 'loss_margin', 0.9)
+        loss_margin_1 = getattr(opt, 'loss_margin_1', 0.3)
+        self.dmloss = ContrastiveLoss(margin=loss_margin, margin_1=loss_margin_1)
 
     def forward(self, x, Y):
         batch_size, _, h, w = x.shape # [batch_size, 2, h, w]
