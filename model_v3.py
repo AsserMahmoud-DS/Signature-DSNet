@@ -194,3 +194,59 @@ class ViT_for_OSV_DSNet(nn.Module):
     
     def save_to_file(self, file_path: str) -> None:
         torch.save(self.state_dict(), file_path)
+
+
+class ViT_for_OSV_DSNet_Normal_emb(ViT_for_OSV_DSNet):
+    def __init__(self, opt):
+        super(ViT_for_OSV_DSNet_Normal_emb, self).__init__(opt)
+        self.normalize_embeddings = getattr(opt, 'normalize_embeddings', True)
+
+    def forward(self, x, Y):
+        batch_size, _, h, w = x.shape # [batch_size, 2, h, w]
+        x1 = x[:, 0, :, :].unsqueeze(1)
+        x2 = x[:, 1, :, :].unsqueeze(1)
+
+        ###
+        x_mask_tmp = F.interpolate(x, size=[7,7], mode='area')
+        #x_mask_tmp = F.interpolate(x, size=[14,14], mode='area')
+        x_mask_tmp = rearrange(x_mask_tmp, 'b c h w -> b c (h w)')
+        mask_1, mask_2 = x_mask_tmp[:, 0,], x_mask_tmp[:, 1,]
+
+        out1, out1_, masks1, x_reg1 = self.forward_one(x1, mask_1)
+        out2, out2_, masks2, x_reg2 = self.forward_one(x2, mask_2)
+
+        # add (linear) head
+        class_token_1 = self.model.head(out1.mean(1))
+        class_token_2 = self.model.head(out2.mean(1))
+
+        if self.normalize_embeddings:
+            # Normalize embeddings before global and local distance computation.
+            class_token_1 = F.normalize(class_token_1, p=2, dim=1)
+            class_token_2 = F.normalize(class_token_2, p=2, dim=1)
+            out1_ = F.normalize(out1_, p=2, dim=-1)
+            out2_ = F.normalize(out2_, p=2, dim=-1)
+
+        B, S1, C = out1_.shape
+        B, S2, C = out2_.shape
+        preds_str = 0
+        eps = 5e-2 if self.training else 5e-8 # 5e-2, 5e-4, 5e-6
+        #eps = 5e-8
+        if self.opt.emd and S1 != 0 and S2 != 0: # train with emd, if no only token selection
+            preds_str, transport, cost = EMD_batched(out1_, out2_, dis_type=self.opt.dis_type, mar_type = self.opt.mar_type, input_pair=x, eps=eps) # mar_type = 'uniform_v2'
+
+        if self.opt.gol_dis == 'l2':
+            preds_gol = self.pdist(class_token_1, class_token_2)
+        elif self.opt.gol_dis == 'cos':
+            preds_gol = 1 - F.cosine_similarity(class_token_1[:,None,:], class_token_2[:,None,:], dim=-1)
+        else:
+            return NameError
+
+        if self.opt.emd:
+            preds_str *= self.opt.temp
+            out = preds_gol + preds_str
+            #out = preds_str
+        else:
+            out = preds_gol
+
+        final_loss = self.dmloss(out, Y.float()) # original
+        return out, final_loss
