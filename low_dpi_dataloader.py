@@ -97,9 +97,16 @@ def build_lowdpi_test_image_from_path(img_path: str, cfg: LowDPIConfig) -> Image
 def _build_lowdpi_profile_augs(train: bool, cfg: LowDPIConfig):
     if not train:
         return None, None
+    rotation_degrees = max(0.0, float(cfg.rotation_degrees))
+    if rotation_degrees == 0.0:
+        return None, None
     # LowDPI profile policy: rotation only, no blur, no random erasing.
     pre_tensor_augment = transforms.Compose([
-        transforms.RandomRotation(degrees=(-cfg.rotation_degrees, cfg.rotation_degrees), fill=255)
+        transforms.RandomRotation(
+            degrees=(-rotation_degrees, rotation_degrees),
+            interpolation=transforms.InterpolationMode.BILINEAR,
+            fill=255,
+        )
     ])
     return pre_tensor_augment, None
 
