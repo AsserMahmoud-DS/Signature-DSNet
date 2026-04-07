@@ -92,7 +92,7 @@ class ViT_for_OSV_DSNet(nn.Module):
         
         self.pdist = nn.PairwiseDistance(p=2, keepdim = True)
         
-        self.dmloss = ContrastiveLoss(margin=1.1, margin_1=0.25)
+        self.dmloss = ContrastiveLoss(margin=0.9, margin_1=0.3)
         self.bceloss = nn.BCELoss()
         
         self.opt = opt
