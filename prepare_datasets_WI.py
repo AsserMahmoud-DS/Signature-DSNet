@@ -10,7 +10,7 @@ Writer-independent pair generation for signature datasets.
 import os
 import re
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Tuple
 
 from tqdm import tqdm
@@ -148,6 +148,234 @@ def _generate_pairs_for_writers(
                 pairs.append((gen_list[i], forg_list[j], 0))
 
     return pairs
+
+
+def _pair_key(pair: Tuple[str, str, int]) -> Tuple[str, str, int]:
+    """Stable key for duplicate detection.
+
+    For genuine-genuine pairs (label=1), order is canonicalized so (a,b,1)
+    and (b,a,1) map to the same key.
+    """
+    refer, test, label = pair
+    if label == 1 and refer > test:
+        refer, test = test, refer
+    return refer, test, label
+
+
+def _dedupe_pairs(pairs: List[Tuple[str, str, int]]) -> Tuple[List[Tuple[str, str, int]], int]:
+    """Drop exact duplicate pairs while preserving first-seen order."""
+    seen = set()
+    deduped: List[Tuple[str, str, int]] = []
+    duplicate_count = 0
+    for p in pairs:
+        key = _pair_key(p)
+        if key in seen:
+            duplicate_count += 1
+            continue
+        seen.add(key)
+        deduped.append(p)
+    return deduped, duplicate_count
+
+
+def _extract_writer_id_from_relpath(path: str) -> Optional[str]:
+    path_norm = path.replace("\\", "/")
+    filename = os.path.basename(path_norm)
+
+    match = re.match(r"^cf?-(\d+)-", filename, flags=re.IGNORECASE)
+    if match:
+        return str(int(match.group(1)))
+
+    parts = path_norm.split("/")
+    if "test" in parts:
+        idx = parts.index("test")
+        if idx + 1 < len(parts):
+            maybe_id = parts[idx + 1]
+            if maybe_id.isdigit():
+                return str(int(maybe_id))
+
+    return None
+
+
+def _extract_writer_id_from_pair(pair: Tuple[str, str, int]) -> Optional[str]:
+    refer, test, _ = pair
+    w_refer = _extract_writer_id_from_relpath(refer)
+    if w_refer is not None:
+        return w_refer
+    return _extract_writer_id_from_relpath(test)
+
+
+def _sample_label_pairs_writer_round_robin(
+    pairs: List[Tuple[str, str, int]],
+    target_count: int,
+    rng: random.Random,
+) -> List[Tuple[str, str, int]]:
+    """Sample pairs with broad writer coverage and no duplicates.
+
+    The sampling is performed in round-robin over writers to reduce dominance
+    of writers that happen to have many candidate pairs.
+    """
+    if target_count <= 0 or len(pairs) == 0:
+        return []
+
+    writer_to_pairs: Dict[str, List[Tuple[str, str, int]]] = defaultdict(list)
+    unknown_writer_pairs: List[Tuple[str, str, int]] = []
+
+    for p in pairs:
+        writer_id = _extract_writer_id_from_pair(p)
+        if writer_id is None:
+            unknown_writer_pairs.append(p)
+        else:
+            writer_to_pairs[writer_id].append(p)
+
+    for writer_id in writer_to_pairs:
+        rng.shuffle(writer_to_pairs[writer_id])
+    rng.shuffle(unknown_writer_pairs)
+
+    selected: List[Tuple[str, str, int]] = []
+    cursor = {writer_id: 0 for writer_id in writer_to_pairs.keys()}
+    active_writers = list(writer_to_pairs.keys())
+
+    # Writer-round-robin pass.
+    while len(selected) < target_count and active_writers:
+        rng.shuffle(active_writers)
+        next_active: List[str] = []
+        for writer_id in active_writers:
+            idx = cursor[writer_id]
+            writer_pairs = writer_to_pairs[writer_id]
+            if idx < len(writer_pairs):
+                selected.append(writer_pairs[idx])
+                cursor[writer_id] = idx + 1
+                if len(selected) >= target_count:
+                    break
+            if cursor[writer_id] < len(writer_pairs):
+                next_active.append(writer_id)
+        active_writers = next_active
+
+    if len(selected) < target_count and unknown_writer_pairs:
+        remaining = target_count - len(selected)
+        selected.extend(unknown_writer_pairs[:remaining])
+
+    return selected
+
+
+def _summarize_pair_redundancy(
+    pairs: List[Tuple[str, str, int]],
+    split_name: str,
+) -> Dict[str, object]:
+    counts = Counter([p[2] for p in pairs])
+
+    writer_counts = Counter()
+    unknown_writer_count = 0
+    for p in pairs:
+        writer_id = _extract_writer_id_from_pair(p)
+        if writer_id is None:
+            unknown_writer_count += 1
+        else:
+            writer_counts[writer_id] += 1
+
+    writer_pair_values = list(writer_counts.values())
+    num_writers = len(writer_pair_values)
+    writer_min = min(writer_pair_values) if writer_pair_values else 0
+    writer_max = max(writer_pair_values) if writer_pair_values else 0
+    writer_mean = (sum(writer_pair_values) / num_writers) if num_writers > 0 else 0.0
+
+    print(
+        f"{split_name}: total={len(pairs)} pos={counts.get(1, 0)} neg={counts.get(0, 0)} "
+        f"writers={num_writers} unknown_writer_pairs={unknown_writer_count} "
+        f"writer_pairs[min/mean/max]={writer_min}/{writer_mean:.1f}/{writer_max}"
+    )
+
+    return {
+        "total_pairs": len(pairs),
+        "num_pos_pairs": counts.get(1, 0),
+        "num_neg_pairs": counts.get(0, 0),
+        "num_writers": num_writers,
+        "unknown_writer_pairs": unknown_writer_count,
+        "writer_pairs_min": writer_min,
+        "writer_pairs_mean": writer_mean,
+        "writer_pairs_max": writer_max,
+    }
+
+
+def _sample_pairs_for_gdps_split(
+    pairs: List[Tuple[str, str, int]],
+    target_count: Optional[int],
+    random_state: int,
+    split_name: str,
+) -> Tuple[List[Tuple[str, str, int]], Dict[str, object]]:
+    """Writer-aware, de-duplicated sampling for GPDS split pair files."""
+    deduped_pairs, duplicate_count = _dedupe_pairs(pairs)
+    if duplicate_count > 0:
+        print(f"{split_name}: removed {duplicate_count} duplicate pairs before sampling")
+
+    if target_count is None or target_count <= 0 or target_count >= len(deduped_pairs):
+        info = {
+            "num_input_pairs": len(pairs),
+            "num_after_dedup": len(deduped_pairs),
+            "num_removed_duplicates": duplicate_count,
+            "target_count": target_count,
+            "num_sampled": len(deduped_pairs),
+        }
+        return deduped_pairs, info
+
+    rng = random.Random(random_state)
+    pos_pairs = [p for p in deduped_pairs if p[2] == 1]
+    neg_pairs = [p for p in deduped_pairs if p[2] == 0]
+
+    if len(pos_pairs) == 0 or len(neg_pairs) == 0:
+        sampled = deduped_pairs[:]
+        rng.shuffle(sampled)
+        sampled = sampled[:target_count]
+        info = {
+            "num_input_pairs": len(pairs),
+            "num_after_dedup": len(deduped_pairs),
+            "num_removed_duplicates": duplicate_count,
+            "target_count": target_count,
+            "num_sampled": len(sampled),
+            "sampling_mode": "single-class-random",
+        }
+        print(
+            f"{split_name}: capped to {len(sampled)} pairs without stratification "
+            f"(single-class source)."
+        )
+        return sampled, info
+
+    total = len(deduped_pairs)
+    target_pos = int(round(target_count * (len(pos_pairs) / total)))
+    target_pos = max(1, min(target_pos, len(pos_pairs), target_count - 1))
+    target_neg = target_count - target_pos
+
+    if target_neg > len(neg_pairs):
+        target_neg = len(neg_pairs)
+        target_pos = min(target_count - target_neg, len(pos_pairs))
+    if target_pos > len(pos_pairs):
+        target_pos = len(pos_pairs)
+        target_neg = min(target_count - target_pos, len(neg_pairs))
+
+    sampled_pos = _sample_label_pairs_writer_round_robin(pos_pairs, target_pos, rng)
+    sampled_neg = _sample_label_pairs_writer_round_robin(neg_pairs, target_neg, rng)
+
+    sampled = sampled_pos + sampled_neg
+    rng.shuffle(sampled)
+
+    label_counts = Counter([p[2] for p in sampled])
+    print(
+        f"{split_name}: capped to {len(sampled)} pairs "
+        f"(pos={label_counts.get(1, 0)}, neg={label_counts.get(0, 0)}) "
+        "using writer-round-robin sampling"
+    )
+
+    info = {
+        "num_input_pairs": len(pairs),
+        "num_after_dedup": len(deduped_pairs),
+        "num_removed_duplicates": duplicate_count,
+        "target_count": target_count,
+        "target_pos": target_pos,
+        "target_neg": target_neg,
+        "num_sampled": len(sampled),
+        "sampling_mode": "writer-round-robin",
+    }
+    return sampled, info
 
 
 def _sample_pairs_with_label_ratio(
@@ -318,24 +546,42 @@ def generate_gdps_pairs(
     val_pairs_full = _generate_pairs_for_writers(writer_map, val_writers, "val")
     test_pairs_full = _generate_pairs_for_writers(writer_map, test_writers, "test")
 
-    train_pairs = _sample_pairs_with_label_ratio(
+    train_pairs, train_sampling_info = _sample_pairs_for_gdps_split(
         train_pairs_full,
         target_count=target_train_pairs,
         random_state=random_state + 11,
         split_name="train",
     )
-    val_pairs = _sample_pairs_with_label_ratio(
+    val_pairs, val_sampling_info = _sample_pairs_for_gdps_split(
         val_pairs_full,
         target_count=target_val_pairs,
         random_state=random_state + 17,
         split_name="val",
     )
-    test_pairs = _sample_pairs_with_label_ratio(
+    test_pairs, test_sampling_info = _sample_pairs_for_gdps_split(
         test_pairs_full,
         target_count=target_test_pairs,
         random_state=random_state + 23,
         split_name="test",
     )
+
+    # Cross-split safety checks
+    train_pair_keys = set(_pair_key(p) for p in train_pairs)
+    val_pair_keys = set(_pair_key(p) for p in val_pairs)
+    test_pair_keys = set(_pair_key(p) for p in test_pairs)
+
+    overlap_train_val = len(train_pair_keys & val_pair_keys)
+    overlap_train_test = len(train_pair_keys & test_pair_keys)
+    overlap_val_test = len(val_pair_keys & test_pair_keys)
+
+    print("GDPS-WI pair overlap sanity:")
+    print(f"  overlap(train,val)={overlap_train_val}")
+    print(f"  overlap(train,test)={overlap_train_test}")
+    print(f"  overlap(val,test)={overlap_val_test}")
+
+    train_redundancy = _summarize_pair_redundancy(train_pairs, "train")
+    val_redundancy = _summarize_pair_redundancy(val_pairs, "val")
+    test_redundancy = _summarize_pair_redundancy(test_pairs, "test")
 
     train_txt = os.path.join(data_root, train_filename)
     val_txt = os.path.join(data_root, val_filename)
@@ -366,6 +612,15 @@ def generate_gdps_pairs(
         "num_train_pairs": len(train_pairs),
         "num_val_pairs": len(val_pairs),
         "num_test_pairs": len(test_pairs),
+        "train_sampling_info": train_sampling_info,
+        "val_sampling_info": val_sampling_info,
+        "test_sampling_info": test_sampling_info,
+        "train_redundancy": train_redundancy,
+        "val_redundancy": val_redundancy,
+        "test_redundancy": test_redundancy,
+        "overlap_train_val_pairs": overlap_train_val,
+        "overlap_train_test_pairs": overlap_train_test,
+        "overlap_val_test_pairs": overlap_val_test,
     }
 
 
