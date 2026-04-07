@@ -1,12 +1,34 @@
 import os
+import re
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 from PIL import Image
 import numpy as np
 from tqdm import tqdm
+from collections import Counter
 
 from module.preprocess import normalize_image
+
+
+def _pair_key(refer: str, test: str, label: int):
+    if label == 1 and refer > test:
+        refer, test = test, refer
+    return refer, test, label
+
+
+def _extract_writer_id_from_relpath(path_str):
+    filename = os.path.basename(path_str)
+    match = re.match(r"^cf?-(\d+)-", filename, flags=re.IGNORECASE)
+    if match:
+        return str(int(match.group(1)))
+
+    parts = path_str.replace('\\', '/').split('/')
+    if 'test' in parts:
+        idx = parts.index('test')
+        if idx + 1 < len(parts) and parts[idx + 1].isdigit():
+            return str(int(parts[idx + 1]))
+    return None
 
 
 def imread_tool(img_path):
@@ -344,6 +366,8 @@ class SigDataset_GDPS_Kaggle(Dataset):
 
             self.labels = []
             self.pairs = []
+            seen_pairs = set()
+            duplicate_pairs = 0
             for line_num, line in enumerate(lines, 1):
                 parts = line.strip().split('\t')  # Use tab as delimiter to handle filenames with spaces
                 if len(parts) < 3:
@@ -354,17 +378,47 @@ class SigDataset_GDPS_Kaggle(Dataset):
                 try:
                     refer = parts[0].replace('\\', '/').replace('/', os.sep)
                     test  = parts[1].replace('\\', '/').replace('/', os.sep)
-                    label = parts[2]
+                    label = int(parts[2])
+
+                    pair_key = _pair_key(refer, test, label)
+                    if pair_key in seen_pairs:
+                        duplicate_pairs += 1
+                        continue
+                    seen_pairs.add(pair_key)
                     
                     # Paths from pair file are already relative to image_root
                     if refer in self.img_dict and test in self.img_dict:
                         self.pairs.append((refer, test))
-                        self.labels.append(int(label))
+                        self.labels.append(label)
                 except ValueError as e:
                     print(f"❌ Error parsing line {line_num}: {line.strip()}")
                     print(f"   columns: {parts}")
                     print(f"   Error: {e}")
                     raise
+
+            writer_counts = Counter()
+            unknown_writer_pairs = 0
+            for refer, test in self.pairs:
+                writer_id = _extract_writer_id_from_relpath(refer)
+                if writer_id is None:
+                    writer_id = _extract_writer_id_from_relpath(test)
+                if writer_id is None:
+                    unknown_writer_pairs += 1
+                else:
+                    writer_counts[writer_id] += 1
+
+            writer_values = list(writer_counts.values())
+            writer_min = min(writer_values) if writer_values else 0
+            writer_max = max(writer_values) if writer_values else 0
+            writer_mean = float(sum(writer_values) / len(writer_values)) if writer_values else 0.0
+
+            if duplicate_pairs > 0:
+                print(f"⚠️  GPDS pair file duplicates removed in loader: {duplicate_pairs}")
+            print(
+                "📊 GPDS writer coverage in loaded pairs: "
+                f"writers={len(writer_counts)} unknown_writer_pairs={unknown_writer_pairs} "
+                f"writer_pairs[min/mean/max]={writer_min}/{writer_mean:.1f}/{writer_max}"
+            )
         
         self.train = train
         print(f"Kaggle GDPS: Loaded {len(self.labels)} pairs (pre-cached in RAM)")
