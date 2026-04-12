@@ -92,7 +92,10 @@ class ViT_for_OSV_DSNet(nn.Module):
         
         self.pdist = nn.PairwiseDistance(p=2, keepdim = True)
         
-        self.dmloss = ContrastiveLoss(margin=0.9, margin_1=0.3)
+        # Backward-compatible defaults keep legacy notebooks/runs unchanged.
+        self.loss_margin = float(getattr(opt, 'loss_margin', 0.9))
+        self.loss_margin_1 = float(getattr(opt, 'loss_margin_1', 0.3))
+        self.dmloss = ContrastiveLoss(margin=self.loss_margin, margin_1=self.loss_margin_1)
         self.bceloss = nn.BCELoss()
         
         self.opt = opt
