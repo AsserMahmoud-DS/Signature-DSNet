@@ -38,6 +38,13 @@ def imread_tool(img_path):
     return Image.fromarray(normalized_image), Image.fromarray(cropped_image)
 
 
+def _get_rotation_degrees(opt, default=10.0):
+    # Keep legacy behavior when the notebook/config does not provide this value.
+    if opt is None:
+        return float(default)
+    return float(getattr(opt, 'rotation_degrees', default))
+
+
 class LetterboxResize:
     def __init__(self, size=256):
         self.size = size
@@ -68,11 +75,12 @@ class SigDataset_CEDAR_Kaggle(Dataset):
             transforms.ToTensor()]
         self.basic_transforms = transforms.Compose(trans_list)
 
+        rotation_degrees = _get_rotation_degrees(opt, default=10.0)
         pre_tensor_aug_list = [
                         transforms.RandomApply([
                             transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.8))
                         ], p=0.3),
-                transforms.RandomRotation(degrees=(-10, 10), fill=255)]
+            transforms.RandomRotation(degrees=(-rotation_degrees, rotation_degrees), fill=255)]
         self.pre_tensor_augment = transforms.Compose(pre_tensor_aug_list)
         self.post_tensor_augment = transforms.RandomErasing(
             p=0.05,
@@ -188,11 +196,12 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         ]
         self.basic_transforms = transforms.Compose(trans_list)
 
+        rotation_degrees = _get_rotation_degrees(opt, default=10.0)
         pre_tensor_aug_list = [
             transforms.RandomApply([
                 transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.8))
             ], p=0.3),
-            transforms.RandomRotation(degrees=(-10, 10), fill=255),
+            transforms.RandomRotation(degrees=(-rotation_degrees, rotation_degrees), fill=255),
         ]
         self.pre_tensor_augment = transforms.Compose(pre_tensor_aug_list)
         self.post_tensor_augment = transforms.RandomErasing(
@@ -297,11 +306,12 @@ class SigDataset_GDPS_Kaggle(Dataset):
             transforms.ToTensor()]
         self.basic_transforms = transforms.Compose(trans_list)
 
+        rotation_degrees = _get_rotation_degrees(opt, default=10.0)
         pre_tensor_aug_list = [
                         transforms.RandomApply([
                             transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.8))
                         ], p=0.3),
-                transforms.RandomRotation(degrees=(-10, 10), fill=255)]
+            transforms.RandomRotation(degrees=(-rotation_degrees, rotation_degrees), fill=255)]
         self.pre_tensor_augment = transforms.Compose(pre_tensor_aug_list)
         self.post_tensor_augment = transforms.RandomErasing(
             p=0.05,
