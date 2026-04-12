@@ -19,6 +19,7 @@ from WI_sig_dataloader_kaggle import (
 @dataclass
 class LowDPIConfig:
     pair_profile: str = "hq_hq"
+    reference_mode: str = "hq"
     target_max_side: int = 200
     sharpen_enabled: bool = True
     sharpen_mode: str = "unsharp"
@@ -36,6 +37,7 @@ def build_lowdpi_config(opt: Any = None) -> LowDPIConfig:
 
     return LowDPIConfig(
         pair_profile=getattr(opt, "pair_profile", "hq_hq"),
+        reference_mode=str(getattr(opt, "lowdpi_reference_mode", "hq")),
         target_max_side=int(getattr(opt, "lowdpi_target_max_side", 200)),
         sharpen_enabled=bool(getattr(opt, "lowdpi_enable_sharpen", True)),
         sharpen_mode=str(getattr(opt, "lowdpi_sharpen_mode", "unsharp")),
@@ -56,6 +58,7 @@ def summarize_lowdpi_config(cfg_or_opt: Any) -> Dict[str, Any]:
     cfg = cfg_or_opt if isinstance(cfg_or_opt, LowDPIConfig) else build_lowdpi_config(cfg_or_opt)
     return {
         "pair_profile": cfg.pair_profile,
+        "reference_mode": cfg.reference_mode,
         "target_max_side": cfg.target_max_side,
         "sharpen_enabled": cfg.sharpen_enabled,
         "sharpen_mode": cfg.sharpen_mode,
@@ -81,6 +84,15 @@ def _box_downsample_preserve_aspect(img: Image.Image, target_max_side: int) -> I
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
     return img.resize((new_w, new_h), Image.BOX)
+
+
+def _resolve_image_path(image_root: str, img_path: str) -> str:
+    if os.path.isabs(img_path):
+        return img_path
+    joined_path = os.path.join(image_root, img_path)
+    if os.path.exists(joined_path):
+        return joined_path
+    return img_path
 
 
 def _apply_detail_transfer_sharpen(img: Image.Image, alpha: float, sigma: float) -> Image.Image:
@@ -141,6 +153,17 @@ def build_lowdpi_test_image_from_path(img_path: str, cfg: LowDPIConfig) -> Image
     return out
 
 
+def use_lowdpi_reference(cfg: LowDPIConfig) -> bool:
+    mode = str(cfg.reference_mode).strip().lower()
+    if mode in {"hq", "300", "300dpi", "high", "highdpi"}:
+        return False
+    if mode in {"lowdpi70", "70", "70dpi", "low", "lowdpi"}:
+        return True
+    raise ValueError(
+        "Unsupported lowdpi_reference_mode='{}' (expected 'hq' or 'lowdpi70')".format(cfg.reference_mode)
+    )
+
+
 def _build_lowdpi_profile_augs(train: bool, cfg: LowDPIConfig):
     if not train:
         return None, None
@@ -170,6 +193,7 @@ class SigDataset_CEDAR_Kaggle(_BaseCEDARKaggle):
         super().__init__(opt, image_root, pair_root, train=train, image_size=image_size, mode=mode, pair_filename=pair_filename)
         self.lowdpi_cfg = build_lowdpi_config(opt)
         self.use_lowdpi_profile = is_hq_lowdpi_profile(self.lowdpi_cfg)
+        self.use_lowdpi_reference = self.use_lowdpi_profile and use_lowdpi_reference(self.lowdpi_cfg)
         if self.use_lowdpi_profile and self.train:
             self.pre_tensor_augment, self.post_tensor_augment = _build_lowdpi_profile_augs(self.train, self.lowdpi_cfg)
 
@@ -178,8 +202,13 @@ class SigDataset_CEDAR_Kaggle(_BaseCEDARKaggle):
             return super().__getitem__(index)
 
         refer_path, test_path = self.pairs[index]
-        refer_img = self.img_dict[refer_path].copy()
-        test_img = build_lowdpi_test_image_from_path(test_path, self.lowdpi_cfg)
+        if self.use_lowdpi_reference:
+            refer_abs_path = _resolve_image_path(self.image_root, refer_path)
+            refer_img = build_lowdpi_test_image_from_path(refer_abs_path, self.lowdpi_cfg)
+        else:
+            refer_img = self.img_dict[refer_path].copy()
+        test_abs_path = _resolve_image_path(self.image_root, test_path)
+        test_img = build_lowdpi_test_image_from_path(test_abs_path, self.lowdpi_cfg)
 
         if self.train and self.pre_tensor_augment is not None:
             refer_img = self.pre_tensor_augment(refer_img)
@@ -200,6 +229,7 @@ class SigDataset_CEDAR_Kaggle_Lite(_BaseCEDARKaggleLite):
         super().__init__(opt, image_root, pair_root, train=train, image_size=image_size, mode=mode, pair_filename=pair_filename)
         self.lowdpi_cfg = build_lowdpi_config(opt)
         self.use_lowdpi_profile = is_hq_lowdpi_profile(self.lowdpi_cfg)
+        self.use_lowdpi_reference = self.use_lowdpi_profile and use_lowdpi_reference(self.lowdpi_cfg)
         if self.use_lowdpi_profile and self.train:
             self.pre_tensor_augment, self.post_tensor_augment = _build_lowdpi_profile_augs(self.train, self.lowdpi_cfg)
 
@@ -208,8 +238,12 @@ class SigDataset_CEDAR_Kaggle_Lite(_BaseCEDARKaggleLite):
             return super().__getitem__(index)
 
         refer_rel, test_rel, label_int = self.pairs[index]
-        refer_img = self.img_dict[refer_rel].copy()
-        test_abs_path = os.path.join(self.image_root, test_rel)
+        if self.use_lowdpi_reference:
+            refer_abs_path = _resolve_image_path(self.image_root, refer_rel)
+            refer_img = build_lowdpi_test_image_from_path(refer_abs_path, self.lowdpi_cfg)
+        else:
+            refer_img = self.img_dict[refer_rel].copy()
+        test_abs_path = _resolve_image_path(self.image_root, test_rel)
         test_img = build_lowdpi_test_image_from_path(test_abs_path, self.lowdpi_cfg)
 
         if self.train and self.pre_tensor_augment is not None:
@@ -233,6 +267,7 @@ class SigDataset_GDPS_Kaggle(_BaseGDPSKaggle):
         super().__init__(opt, image_root, pair_root, train=train, image_size=image_size, mode=mode, pair_filename=pair_filename)
         self.lowdpi_cfg = build_lowdpi_config(opt)
         self.use_lowdpi_profile = is_hq_lowdpi_profile(self.lowdpi_cfg)
+        self.use_lowdpi_reference = self.use_lowdpi_profile and use_lowdpi_reference(self.lowdpi_cfg)
         if self.use_lowdpi_profile and self.train:
             self.pre_tensor_augment, self.post_tensor_augment = _build_lowdpi_profile_augs(self.train, self.lowdpi_cfg)
 
@@ -241,8 +276,12 @@ class SigDataset_GDPS_Kaggle(_BaseGDPSKaggle):
             return super().__getitem__(index)
 
         refer_path, test_path = self.pairs[index]
-        refer_img = self.img_dict[refer_path].copy()
-        test_abs_path = os.path.join(self.image_root, test_path)
+        if self.use_lowdpi_reference:
+            refer_abs_path = _resolve_image_path(self.image_root, refer_path)
+            refer_img = build_lowdpi_test_image_from_path(refer_abs_path, self.lowdpi_cfg)
+        else:
+            refer_img = self.img_dict[refer_path].copy()
+        test_abs_path = _resolve_image_path(self.image_root, test_path)
         test_img = build_lowdpi_test_image_from_path(test_abs_path, self.lowdpi_cfg)
 
         if self.train and self.pre_tensor_augment is not None:
