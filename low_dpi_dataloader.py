@@ -22,6 +22,7 @@ class LowDPIConfig:
     reference_mode: str = "hq"
     target_max_side: int = 200
     sharpen_enabled: bool = True
+    sharpen_reference: bool = True
     sharpen_mode: str = "unsharp"
     sharpen_alpha: float = 0.6
     sharpen_sigma: float = 1.0
@@ -40,6 +41,7 @@ def build_lowdpi_config(opt: Any = None) -> LowDPIConfig:
         reference_mode=str(getattr(opt, "lowdpi_reference_mode", "hq")),
         target_max_side=int(getattr(opt, "lowdpi_target_max_side", 200)),
         sharpen_enabled=bool(getattr(opt, "lowdpi_enable_sharpen", True)),
+        sharpen_reference=bool(getattr(opt, "lowdpi_sharpen_reference", True)),
         sharpen_mode=str(getattr(opt, "lowdpi_sharpen_mode", "unsharp")),
         sharpen_alpha=float(getattr(opt, "lowdpi_sharpen_alpha", 0.6)),
         sharpen_sigma=float(getattr(opt, "lowdpi_sharpen_sigma", 1.0)),
@@ -61,6 +63,7 @@ def summarize_lowdpi_config(cfg_or_opt: Any) -> Dict[str, Any]:
         "reference_mode": cfg.reference_mode,
         "target_max_side": cfg.target_max_side,
         "sharpen_enabled": cfg.sharpen_enabled,
+        "sharpen_reference": cfg.sharpen_reference,
         "sharpen_mode": cfg.sharpen_mode,
         "sharpen_alpha": cfg.sharpen_alpha,
         "sharpen_sigma": cfg.sharpen_sigma,
@@ -124,7 +127,7 @@ def _apply_wavelet_sharpen(
     return Image.fromarray(sharpened)
 
 
-def build_lowdpi_test_image_from_path(img_path: str, cfg: LowDPIConfig) -> Image.Image:
+def build_lowdpi_test_image_from_path(img_path: str, cfg: LowDPIConfig, apply_sharpen: bool = True) -> Image.Image:
     with Image.open(img_path) as _img:
         raw_img = _img.convert("L")
 
@@ -134,7 +137,7 @@ def build_lowdpi_test_image_from_path(img_path: str, cfg: LowDPIConfig) -> Image
     _, cropped = normalize_image(downsampled_np, downsampled_np.shape)
 
     out = Image.fromarray(cropped)
-    if cfg.sharpen_enabled:
+    if cfg.sharpen_enabled and apply_sharpen:
         sharpen_mode = str(cfg.sharpen_mode).strip().lower()
         if sharpen_mode == "unsharp":
             out = _apply_detail_transfer_sharpen(out, alpha=cfg.sharpen_alpha, sigma=cfg.sharpen_sigma)
@@ -204,7 +207,11 @@ class SigDataset_CEDAR_Kaggle(_BaseCEDARKaggle):
         refer_path, test_path = self.pairs[index]
         if self.use_lowdpi_reference:
             refer_abs_path = _resolve_image_path(self.image_root, refer_path)
-            refer_img = build_lowdpi_test_image_from_path(refer_abs_path, self.lowdpi_cfg)
+            refer_img = build_lowdpi_test_image_from_path(
+                refer_abs_path,
+                self.lowdpi_cfg,
+                apply_sharpen=bool(self.lowdpi_cfg.sharpen_reference),
+            )
         else:
             refer_img = self.img_dict[refer_path].copy()
         test_abs_path = _resolve_image_path(self.image_root, test_path)
@@ -240,7 +247,11 @@ class SigDataset_CEDAR_Kaggle_Lite(_BaseCEDARKaggleLite):
         refer_rel, test_rel, label_int = self.pairs[index]
         if self.use_lowdpi_reference:
             refer_abs_path = _resolve_image_path(self.image_root, refer_rel)
-            refer_img = build_lowdpi_test_image_from_path(refer_abs_path, self.lowdpi_cfg)
+            refer_img = build_lowdpi_test_image_from_path(
+                refer_abs_path,
+                self.lowdpi_cfg,
+                apply_sharpen=bool(self.lowdpi_cfg.sharpen_reference),
+            )
         else:
             refer_img = self.img_dict[refer_rel].copy()
         test_abs_path = _resolve_image_path(self.image_root, test_rel)
@@ -278,7 +289,11 @@ class SigDataset_GDPS_Kaggle(_BaseGDPSKaggle):
         refer_path, test_path = self.pairs[index]
         if self.use_lowdpi_reference:
             refer_abs_path = _resolve_image_path(self.image_root, refer_path)
-            refer_img = build_lowdpi_test_image_from_path(refer_abs_path, self.lowdpi_cfg)
+            refer_img = build_lowdpi_test_image_from_path(
+                refer_abs_path,
+                self.lowdpi_cfg,
+                apply_sharpen=bool(self.lowdpi_cfg.sharpen_reference),
+            )
         else:
             refer_img = self.img_dict[refer_path].copy()
         test_abs_path = _resolve_image_path(self.image_root, test_path)
