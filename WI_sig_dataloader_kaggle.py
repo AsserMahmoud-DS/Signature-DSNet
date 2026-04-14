@@ -38,6 +38,16 @@ def _get_crop_margin_ratio(opt, default=0.0):
     return max(0.0, float(getattr(opt, 'crop_margin_ratio', default)))
 
 
+def _resolve_image_mode(mode, default='cropped'):
+    if mode is None:
+        return default
+    mode_str = str(mode).strip().lower()
+    if mode_str in {'normalized', 'cropped'}:
+        return mode_str
+    print(f"⚠️  Unsupported mode='{mode}'. Falling back to '{default}'.")
+    return default
+
+
 def _apply_crop_margin(cropped_image: np.ndarray, margin_ratio: float) -> np.ndarray:
     if margin_ratio <= 0.0:
         return cropped_image
@@ -94,7 +104,7 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         self.image_root = image_root
         self.pair_root = pair_root
         self.image_size = image_size
-        self.mode = mode
+        self.mode = _resolve_image_mode(mode)
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
         
         trans_list = [
@@ -142,8 +152,11 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         # Then load all images with a single progress bar
         self.img_dict = {}
         for img_path in tqdm(img_paths_to_load, desc="Loading CEDAR images", unit="img"):
-            # sig_image, _ = imread_tool(img_path) # normalized
-            _, sig_image = imread_tool(img_path, crop_margin_ratio=self.crop_margin_ratio) # cropped
+            normalized_img, cropped_img = imread_tool(
+                img_path,
+                crop_margin_ratio=(self.crop_margin_ratio if self.mode == 'cropped' else 0.0),
+            )
+            sig_image = normalized_img if self.mode == 'normalized' else cropped_img
             self.img_dict[img_path] = sig_image
         
         with open(pair_path, 'r') as f:
@@ -214,7 +227,7 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         self.image_root = image_root
         self.pair_root = pair_root
         self.image_size = image_size
-        self.mode = mode
+        self.mode = _resolve_image_mode(mode)
         self.train = train
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
 
@@ -290,7 +303,11 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         for rel_path, abs_path in tqdm(img_paths_to_load, desc="Loading CEDAR images (lite)", unit="img"):
             if not os.path.exists(abs_path):
                 raise FileNotFoundError(f"Missing image referenced by pair file: {abs_path}")
-            _, sig_image= imread_tool(abs_path, crop_margin_ratio=self.crop_margin_ratio) # cropped
+            normalized_img, cropped_img = imread_tool(
+                abs_path,
+                crop_margin_ratio=(self.crop_margin_ratio if self.mode == 'cropped' else 0.0),
+            )
+            sig_image = normalized_img if self.mode == 'normalized' else cropped_img
             self.img_dict[rel_path] = sig_image
 
         print(
@@ -327,7 +344,7 @@ class SigDataset_GDPS_Kaggle(Dataset):
         self.image_root = image_root
         self.pair_root = pair_root
         self.image_size = image_size
-        self.mode = mode
+        self.mode = _resolve_image_mode(mode)
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
         
         trans_list = [
@@ -391,7 +408,11 @@ class SigDataset_GDPS_Kaggle(Dataset):
 
             # Load images with a single progress bar
             for rel_path, full_path in tqdm(img_paths_to_load, desc="Loading GDPS images", unit="img"):
-                _, sig_image = imread_tool(full_path, crop_margin_ratio=self.crop_margin_ratio) # cropped
+                normalized_img, cropped_img = imread_tool(
+                    full_path,
+                    crop_margin_ratio=(self.crop_margin_ratio if self.mode == 'cropped' else 0.0),
+                )
+                sig_image = normalized_img if self.mode == 'normalized' else cropped_img
                 self.img_dict[rel_path] = sig_image
         
         if pair_path is None or not os.path.exists(pair_path):
