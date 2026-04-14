@@ -31,10 +31,36 @@ def _extract_writer_id_from_relpath(path_str):
     return None
 
 
-def imread_tool(img_path):
+def _get_crop_margin_ratio(opt, default=0.0):
+    # Backward compatible: if not provided by old notebooks/configs, use 0.0.
+    if opt is None:
+        return float(default)
+    return max(0.0, float(getattr(opt, 'crop_margin_ratio', default)))
+
+
+def _apply_crop_margin(cropped_image: np.ndarray, margin_ratio: float) -> np.ndarray:
+    if margin_ratio <= 0.0:
+        return cropped_image
+
+    h, w = cropped_image.shape
+    if h == 0 or w == 0:
+        return cropped_image
+
+    pad_h = int(h * margin_ratio)
+    pad_w = int(w * margin_ratio)
+    if pad_h <= 0 and pad_w <= 0:
+        return cropped_image
+
+    padded = np.ones((h + 2 * pad_h, w + 2 * pad_w), dtype=np.uint8) * 255
+    padded[pad_h:pad_h + h, pad_w:pad_w + w] = cropped_image
+    return padded
+
+
+def imread_tool(img_path, crop_margin_ratio=0.0):
     image = np.asarray(Image.open(img_path).convert('L'))
     inputSize = image.shape
     normalized_image, cropped_image = normalize_image(image.astype(np.uint8), inputSize)
+    cropped_image = _apply_crop_margin(cropped_image, float(crop_margin_ratio))
     return Image.fromarray(normalized_image), Image.fromarray(cropped_image)
 
 
@@ -69,6 +95,7 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         self.pair_root = pair_root
         self.image_size = image_size
         self.mode = mode
+        self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
         
         trans_list = [
             LetterboxResize(image_size),
@@ -116,7 +143,7 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         self.img_dict = {}
         for img_path in tqdm(img_paths_to_load, desc="Loading CEDAR images", unit="img"):
             # sig_image, _ = imread_tool(img_path) # normalized
-            _, sig_image = imread_tool(img_path) # cropped
+            _, sig_image = imread_tool(img_path, crop_margin_ratio=self.crop_margin_ratio) # cropped
             self.img_dict[img_path] = sig_image
         
         with open(pair_path, 'r') as f:
@@ -189,6 +216,7 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         self.image_size = image_size
         self.mode = mode
         self.train = train
+        self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
 
         trans_list = [
             LetterboxResize(image_size),
@@ -262,7 +290,7 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         for rel_path, abs_path in tqdm(img_paths_to_load, desc="Loading CEDAR images (lite)", unit="img"):
             if not os.path.exists(abs_path):
                 raise FileNotFoundError(f"Missing image referenced by pair file: {abs_path}")
-            _, sig_image= imread_tool(abs_path) # cropped
+            _, sig_image= imread_tool(abs_path, crop_margin_ratio=self.crop_margin_ratio) # cropped
             self.img_dict[rel_path] = sig_image
 
         print(
@@ -300,6 +328,7 @@ class SigDataset_GDPS_Kaggle(Dataset):
         self.pair_root = pair_root
         self.image_size = image_size
         self.mode = mode
+        self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
         
         trans_list = [
             LetterboxResize(image_size),
@@ -362,7 +391,7 @@ class SigDataset_GDPS_Kaggle(Dataset):
 
             # Load images with a single progress bar
             for rel_path, full_path in tqdm(img_paths_to_load, desc="Loading GDPS images", unit="img"):
-                _, sig_image = imread_tool(full_path) # cropped
+                _, sig_image = imread_tool(full_path, crop_margin_ratio=self.crop_margin_ratio) # cropped
                 self.img_dict[rel_path] = sig_image
         
         if pair_path is None or not os.path.exists(pair_path):
