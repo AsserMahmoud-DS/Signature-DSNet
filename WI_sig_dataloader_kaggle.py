@@ -1,12 +1,14 @@
 import os
 import re
+import random
+import hashlib
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 from PIL import Image
 import numpy as np
 from tqdm import tqdm
-from collections import Counter
+from collections import Counter, defaultdict
 
 from module.preprocess import normalize_image
 
@@ -23,12 +25,103 @@ def _extract_writer_id_from_relpath(path_str):
     if match:
         return str(int(match.group(1)))
 
+    cedar_match = re.match(r"^(?:original|forgeries)_(\d+)_\d+\.", filename, flags=re.IGNORECASE)
+    if cedar_match:
+        return str(int(cedar_match.group(1)))
+
     parts = path_str.replace('\\', '/').split('/')
     if 'test' in parts:
         idx = parts.index('test')
         if idx + 1 < len(parts) and parts[idx + 1].isdigit():
             return str(int(parts[idx + 1]))
     return None
+
+
+def _get_multi_ref_config(opt, train):
+    enabled = bool(getattr(opt, 'multi_ref_test', False)) if opt is not None else False
+    enabled = enabled and (not train)
+    num_refs = int(getattr(opt, 'num_refs', 1)) if opt is not None else 1
+    ref_seed = int(getattr(opt, 'ref_seed', 42)) if opt is not None else 42
+
+    if enabled and num_refs < 1:
+        raise ValueError(f"num_refs must be >= 1 when multi_ref_test is enabled, got {num_refs}")
+    return enabled, max(1, num_refs), ref_seed
+
+
+def _writer_sort_key(writer_id):
+    try:
+        return (0, int(writer_id))
+    except (TypeError, ValueError):
+        return (1, str(writer_id))
+
+
+def _stable_writer_seed(base_seed, writer_id):
+    seed_blob = f"{int(base_seed)}::{writer_id}".encode('utf-8')
+    digest = hashlib.sha256(seed_blob).digest()
+    return int.from_bytes(digest[:8], byteorder='big', signed=False)
+
+
+def _expand_pairs_for_multi_ref_eval(raw_pairs, num_refs, ref_seed, dataset_name='dataset'):
+    writer_pool = defaultdict(lambda: {'genuine': set(), 'forgery': set()})
+    unknown_examples = []
+
+    for refer, test, label in raw_pairs:
+        writer_id = _extract_writer_id_from_relpath(refer)
+        if writer_id is None:
+            writer_id = _extract_writer_id_from_relpath(test)
+        if writer_id is None:
+            if len(unknown_examples) < 5:
+                unknown_examples.append((refer, test, int(label)))
+            continue
+
+        writer_pool[writer_id]['genuine'].add(refer)
+        if int(label) == 1:
+            writer_pool[writer_id]['genuine'].add(test)
+        else:
+            writer_pool[writer_id]['forgery'].add(test)
+
+    if unknown_examples:
+        raise ValueError(
+            f"{dataset_name}: failed to extract writer id for {len(unknown_examples)}+ pairs in multi-ref mode. "
+            f"Examples: {unknown_examples}"
+        )
+
+    expanded_pairs = []
+    writer_count = 0
+    total_queries = 0
+
+    for writer_id in sorted(writer_pool.keys(), key=_writer_sort_key):
+        genuine_candidates = sorted(writer_pool[writer_id]['genuine'])
+        forgery_queries = sorted(writer_pool[writer_id]['forgery'])
+
+        if len(genuine_candidates) <= num_refs:
+            raise ValueError(
+                f"{dataset_name}: writer {writer_id} has only {len(genuine_candidates)} genuine images in this split, "
+                f"but num_refs={num_refs} requires at least {num_refs + 1}."
+            )
+
+        writer_seed = _stable_writer_seed(ref_seed, writer_id)
+        rng = random.Random(writer_seed)
+        references = sorted(rng.sample(genuine_candidates, num_refs))
+        reference_set = set(references)
+
+        genuine_queries = [p for p in genuine_candidates if p not in reference_set]
+        queries = [(q, 1) for q in genuine_queries] + [(q, 0) for q in forgery_queries]
+
+        writer_count += 1
+        total_queries += len(queries)
+
+        for query_path, label in queries:
+            for ref_path in references:
+                expanded_pairs.append((ref_path, query_path, int(label)))
+
+    summary = {
+        'writers': writer_count,
+        'num_refs': int(num_refs),
+        'num_queries': int(total_queries),
+        'num_pairs': int(len(expanded_pairs)),
+    }
+    return expanded_pairs, summary
 
 
 def _get_crop_margin_ratio(opt, default=0.0):
@@ -106,6 +199,7 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         self.image_size = image_size
         self.mode = _resolve_image_mode(mode)
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
+        self.multi_ref_enabled, self.multi_ref_num_refs, self.multi_ref_seed = _get_multi_ref_config(opt, train)
         
         trans_list = [
             LetterboxResize(image_size),
@@ -187,6 +281,22 @@ class SigDataset_CEDAR_Kaggle(Dataset):
                 print(f"   columns: {parts}")
                 print(f"   Error: {e}")
                 raise
+
+        if self.multi_ref_enabled:
+            raw_pairs = [(r, t, l) for (r, t), l in zip(self.pairs, self.labels)]
+            expanded_pairs, summary = _expand_pairs_for_multi_ref_eval(
+                raw_pairs,
+                num_refs=self.multi_ref_num_refs,
+                ref_seed=self.multi_ref_seed,
+                dataset_name='CEDAR',
+            )
+            self.pairs = [(r, t) for r, t, _ in expanded_pairs]
+            self.labels = [int(l) for _, _, l in expanded_pairs]
+            print(
+                "🔁 CEDAR multi-ref test enabled: "
+                f"writers={summary['writers']} refs={summary['num_refs']} "
+                f"queries={summary['num_queries']} pairs={summary['num_pairs']}"
+            )
         
         self.train = train
         print(f"Kaggle: Loaded {len(self.labels)} pairs (pre-cached in RAM)")
@@ -230,6 +340,7 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         self.mode = _resolve_image_mode(mode)
         self.train = train
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
+        self.multi_ref_enabled, self.multi_ref_num_refs, self.multi_ref_seed = _get_multi_ref_config(opt, train)
 
         trans_list = [
             LetterboxResize(image_size),
@@ -310,6 +421,20 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
             sig_image = normalized_img if self.mode == 'normalized' else cropped_img
             self.img_dict[rel_path] = sig_image
 
+        if self.multi_ref_enabled:
+            expanded_pairs, summary = _expand_pairs_for_multi_ref_eval(
+                self.pairs,
+                num_refs=self.multi_ref_num_refs,
+                ref_seed=self.multi_ref_seed,
+                dataset_name='CEDAR-lite',
+            )
+            self.pairs = expanded_pairs
+            print(
+                "🔁 CEDAR-lite multi-ref test enabled: "
+                f"writers={summary['writers']} refs={summary['num_refs']} "
+                f"queries={summary['num_queries']} pairs={summary['num_pairs']}"
+            )
+
         print(
             f"Kaggle CEDAR (lite): Loaded {len(self.pairs)} pairs; "
             f"cached {len(self.img_dict)} images in RAM"
@@ -346,6 +471,7 @@ class SigDataset_GDPS_Kaggle(Dataset):
         self.image_size = image_size
         self.mode = _resolve_image_mode(mode)
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
+        self.multi_ref_enabled, self.multi_ref_num_refs, self.multi_ref_seed = _get_multi_ref_config(opt, train)
         
         trans_list = [
             LetterboxResize(image_size),
@@ -478,6 +604,22 @@ class SigDataset_GDPS_Kaggle(Dataset):
                 "📊 GPDS writer coverage in loaded pairs: "
                 f"writers={len(writer_counts)} unknown_writer_pairs={unknown_writer_pairs} "
                 f"writer_pairs[min/mean/max]={writer_min}/{writer_mean:.1f}/{writer_max}"
+            )
+
+        if self.multi_ref_enabled:
+            raw_pairs = [(r, t, l) for (r, t), l in zip(self.pairs, self.labels)]
+            expanded_pairs, summary = _expand_pairs_for_multi_ref_eval(
+                raw_pairs,
+                num_refs=self.multi_ref_num_refs,
+                ref_seed=self.multi_ref_seed,
+                dataset_name='GPDS',
+            )
+            self.pairs = [(r, t) for r, t, _ in expanded_pairs]
+            self.labels = [int(l) for _, _, l in expanded_pairs]
+            print(
+                "🔁 GPDS multi-ref test enabled: "
+                f"writers={summary['writers']} refs={summary['num_refs']} "
+                f"queries={summary['num_queries']} pairs={summary['num_pairs']}"
             )
         
         self.train = train
