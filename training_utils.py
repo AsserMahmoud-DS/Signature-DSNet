@@ -485,6 +485,74 @@ def evaluate_at_threshold(predictions, labels, threshold, step=None):
     return metrics
 
 
+def _extract_images_labels(batch_data):
+    """Normalize dataloader batch payload to (images, labels)."""
+    if isinstance(batch_data, (list, tuple)) and len(batch_data) >= 2:
+        return batch_data[0], batch_data[1]
+    raise ValueError("Expected batch_data to be tuple/list with at least (images, labels)")
+
+
+def _resolve_mixed_batch_counts(primary_batch_size, replay_batch_size, mix_ratio=(1, 1), total_batch_size=None):
+    if not isinstance(mix_ratio, (tuple, list)) or len(mix_ratio) != 2:
+        raise ValueError(f"mix_ratio must be a length-2 tuple/list, got: {mix_ratio}")
+
+    ratio_primary = int(mix_ratio[0])
+    ratio_replay = int(mix_ratio[1])
+    if ratio_primary <= 0 or ratio_replay <= 0:
+        raise ValueError(f"mix_ratio entries must be > 0, got: {mix_ratio}")
+
+    if total_batch_size is None:
+        total_batch_size = int(primary_batch_size + replay_batch_size)
+    total_batch_size = int(total_batch_size)
+    if total_batch_size < 2:
+        raise ValueError(f"total_batch_size must be >= 2, got: {total_batch_size}")
+
+    ratio_sum = float(ratio_primary + ratio_replay)
+    primary_count = int(round(total_batch_size * (ratio_primary / ratio_sum)))
+    primary_count = max(1, min(primary_count, total_batch_size - 1))
+    replay_count = int(total_batch_size - primary_count)
+
+    if primary_count > int(primary_batch_size) or replay_count > int(replay_batch_size):
+        raise ValueError(
+            "Mixed-batch split exceeds available loader batch size. "
+            f"Need primary/replay={primary_count}/{replay_count}, "
+            f"but got primary/replay={primary_batch_size}/{replay_batch_size}. "
+            "Increase the corresponding loader batch_size or reduce total_batch_size."
+        )
+
+    return primary_count, replay_count
+
+
+def _build_mixed_batch(
+    primary_images,
+    primary_labels,
+    replay_images,
+    replay_labels,
+    primary_count,
+    replay_count,
+    *,
+    shuffle_within_batch=True,
+    shuffle_generator=None,
+):
+    mixed_images = torch.cat(
+        (primary_images[:primary_count], replay_images[:replay_count]),
+        dim=0,
+    )
+    mixed_labels = torch.cat(
+        (primary_labels[:primary_count], replay_labels[:replay_count]),
+        dim=0,
+    )
+
+    if shuffle_within_batch and mixed_images.shape[0] > 1:
+        perm = torch.randperm(mixed_images.shape[0], generator=shuffle_generator)
+        if perm.device != mixed_images.device:
+            perm = perm.to(mixed_images.device)
+        mixed_images = mixed_images[perm]
+        mixed_labels = mixed_labels[perm]
+
+    return mixed_images, mixed_labels
+
+
 def train_one_epoch_mixed(
     model,
     primary_loader,
@@ -603,6 +671,141 @@ def train_one_epoch_mixed(
         if log_margin_stats:
             print(
                 "📏 Margin stats (mixed): "
+                f"pos_mean={margin_stats['pos_mean']:.4f}, "
+                f"neg_mean={margin_stats['neg_mean']:.4f}, "
+                f"pos_max={margin_stats['pos_max']:.4f}, "
+                f"neg_min={margin_stats['neg_min']:.4f}, "
+                f"gap(neg-pos)={margin_stats['mean_gap_neg_minus_pos']:.4f}"
+            )
+            if margin_1 is not None:
+                print(
+                    f"   pos>d1({margin_1:.4f}) rate={margin_stats['pos_margin1_violation_rate']:.4f}"
+                )
+            if margin is not None:
+                print(
+                    f"   neg<d2({margin:.4f}) rate={margin_stats['neg_margin_violation_rate']:.4f}"
+                )
+        if return_margin_stats:
+            return avg_loss, margin_stats
+
+    return avg_loss
+
+
+def train_one_epoch_mixed_batch(
+    model,
+    primary_loader,
+    replay_loader,
+    optimizer,
+    loss_fn,
+    device='cuda',
+    *,
+    mix_ratio=(1, 1),
+    total_batch_size=None,
+    max_steps=None,
+    shuffle_within_batch=True,
+    shuffle_seed=42,
+    log_margin_stats=False,
+    return_margin_stats=False,
+):
+    """Train one epoch using a single mixed batch from primary+replay on each step.
+
+    Semantics:
+    - Build each optimizer step from both loaders (sample-level mixing), then optional shuffle.
+    - Default mix_ratio is 1:1 (primary:replay) inside each mixed batch.
+    - If max_steps is None, epoch length is anchored to len(primary_loader).
+    - replay_loader is cycled when exhausted.
+    - Mixed-batch shuffle is seeded via `shuffle_seed` for reproducibility.
+
+    Notes:
+    - For best efficiency, configure loader batch sizes to satisfy the required split.
+      Example: total_batch_size=32 and mix_ratio=(1,1) -> primary batch_size>=16, replay batch_size>=16.
+    """
+
+    if len(primary_loader) == 0:
+        raise ValueError("primary_loader is empty")
+    if len(replay_loader) == 0:
+        raise ValueError("replay_loader is empty")
+
+    model.train()
+    total_loss = 0.0
+    num_steps = 0
+
+    primary_iter = iter(primary_loader)
+    replay_iter = iter(replay_loader)
+    margin_stats_acc = _init_margin_stats_acc() if (log_margin_stats or return_margin_stats) else None
+    margin = getattr(loss_fn, 'margin', None)
+    margin_1 = getattr(loss_fn, 'margin_1', None)
+
+    pbar_total = int(max_steps) if max_steps is not None else int(len(primary_loader))
+    pbar = tqdm(total=pbar_total, desc="Training (mixed-batch)")
+
+    shuffle_generator = None
+    if shuffle_within_batch and shuffle_seed is not None:
+        shuffle_generator = torch.Generator()
+        shuffle_generator.manual_seed(int(shuffle_seed))
+
+    while True:
+        if max_steps is not None and num_steps >= int(max_steps):
+            break
+        if max_steps is None and num_steps >= len(primary_loader):
+            break
+
+        try:
+            primary_batch = next(primary_iter)
+        except StopIteration:
+            break
+
+        try:
+            replay_batch = next(replay_iter)
+        except StopIteration:
+            replay_iter = iter(replay_loader)
+            replay_batch = next(replay_iter)
+
+        primary_images, primary_labels = _extract_images_labels(primary_batch)
+        replay_images, replay_labels = _extract_images_labels(replay_batch)
+
+        primary_count, replay_count = _resolve_mixed_batch_counts(
+            primary_batch_size=int(primary_images.shape[0]),
+            replay_batch_size=int(replay_images.shape[0]),
+            mix_ratio=mix_ratio,
+            total_batch_size=total_batch_size,
+        )
+
+        images, labels = _build_mixed_batch(
+            primary_images,
+            primary_labels,
+            replay_images,
+            replay_labels,
+            primary_count,
+            replay_count,
+            shuffle_within_batch=bool(shuffle_within_batch),
+            shuffle_generator=shuffle_generator,
+        )
+
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        labels = labels.view(labels.shape[0], -1)[:, :1].float()
+
+        optimizer.zero_grad()
+        outputs, loss = model(images, labels)
+        if margin_stats_acc is not None:
+            _accumulate_margin_stats(margin_stats_acc, outputs, labels, margin=margin, margin_1=margin_1)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        total_loss += float(loss.item())
+        num_steps += 1
+        pbar.update(1)
+        pbar.set_postfix({'loss': float(loss.item())})
+
+    avg_loss = (total_loss / num_steps) if num_steps > 0 else 0.0
+
+    if margin_stats_acc is not None:
+        margin_stats = _finalize_margin_stats(margin_stats_acc)
+        if log_margin_stats:
+            print(
+                "📏 Margin stats (mixed-batch): "
                 f"pos_mean={margin_stats['pos_mean']:.4f}, "
                 f"neg_mean={margin_stats['neg_mean']:.4f}, "
                 f"pos_max={margin_stats['pos_max']:.4f}, "
