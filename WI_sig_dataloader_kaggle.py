@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 from collections import Counter, defaultdict
 
-from module.preprocess import normalize_image
+from module.preprocess import normalize_image, get_clean_signature_crop
 
 
 def _pair_key(refer: str, test: str, label: int):
@@ -131,11 +131,27 @@ def _get_crop_margin_ratio(opt, default=0.0):
     return max(0.0, float(getattr(opt, 'crop_margin_ratio', default)))
 
 
+def _get_crop_v2_min_blob_size(opt, default=50):
+    if opt is None:
+        return int(default)
+    return max(1, int(getattr(opt, 'crop_v2_min_blob_size', default)))
+
+
+def _get_crop_v2_disk_radius(opt, default=1):
+    if opt is None:
+        return int(default)
+    return max(1, int(getattr(opt, 'crop_v2_disk_radius', default)))
+
+
+def _is_cropped_mode(mode):
+    return str(mode).strip().lower() in {'cropped', 'cropped_v2_median'}
+
+
 def _resolve_image_mode(mode, default='cropped'):
     if mode is None:
         return default
     mode_str = str(mode).strip().lower()
-    if mode_str in {'normalized', 'cropped'}:
+    if mode_str in {'normalized', 'cropped', 'cropped_v2_median'}:
         return mode_str
     print(f"⚠️  Unsupported mode='{mode}'. Falling back to '{default}'.")
     return default
@@ -165,6 +181,33 @@ def imread_tool(img_path, crop_margin_ratio=0.0):
     normalized_image, cropped_image = normalize_image(image.astype(np.uint8), inputSize)
     cropped_image = _apply_crop_margin(cropped_image, float(crop_margin_ratio))
     return Image.fromarray(normalized_image), Image.fromarray(cropped_image)
+
+
+def _load_sig_image_for_mode(
+    img_path,
+    mode,
+    crop_margin_ratio=0.0,
+    crop_v2_min_blob_size=50,
+    crop_v2_disk_radius=1,
+):
+    mode_resolved = _resolve_image_mode(mode)
+    if mode_resolved == 'normalized':
+        normalized_img, _ = imread_tool(img_path, crop_margin_ratio=0.0)
+        return normalized_img
+
+    if mode_resolved == 'cropped':
+        _, cropped_img = imread_tool(img_path, crop_margin_ratio=float(crop_margin_ratio))
+        return cropped_img
+
+    with Image.open(img_path) as _img:
+        image = np.asarray(_img.convert('L'))
+    cropped_v2 = get_clean_signature_crop(
+        image.astype(np.uint8),
+        min_blob_size=int(crop_v2_min_blob_size),
+        disk_radius=int(crop_v2_disk_radius),
+    )
+    cropped_v2 = _apply_crop_margin(cropped_v2, float(crop_margin_ratio))
+    return Image.fromarray(cropped_v2)
 
 
 def _get_rotation_degrees(opt, default=10.0):
@@ -199,6 +242,8 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         self.image_size = image_size
         self.mode = _resolve_image_mode(mode)
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
+        self.crop_v2_min_blob_size = _get_crop_v2_min_blob_size(opt, default=50)
+        self.crop_v2_disk_radius = _get_crop_v2_disk_radius(opt, default=1)
         self.multi_ref_enabled, self.multi_ref_num_refs, self.multi_ref_seed = _get_multi_ref_config(opt, train)
         
         trans_list = [
@@ -246,11 +291,13 @@ class SigDataset_CEDAR_Kaggle(Dataset):
         # Then load all images with a single progress bar
         self.img_dict = {}
         for img_path in tqdm(img_paths_to_load, desc="Loading CEDAR images", unit="img"):
-            normalized_img, cropped_img = imread_tool(
+            sig_image = _load_sig_image_for_mode(
                 img_path,
-                crop_margin_ratio=(self.crop_margin_ratio if self.mode == 'cropped' else 0.0),
+                mode=self.mode,
+                crop_margin_ratio=(self.crop_margin_ratio if _is_cropped_mode(self.mode) else 0.0),
+                crop_v2_min_blob_size=self.crop_v2_min_blob_size,
+                crop_v2_disk_radius=self.crop_v2_disk_radius,
             )
-            sig_image = normalized_img if self.mode == 'normalized' else cropped_img
             self.img_dict[img_path] = sig_image
         
         with open(pair_path, 'r') as f:
@@ -340,6 +387,8 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         self.mode = _resolve_image_mode(mode)
         self.train = train
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
+        self.crop_v2_min_blob_size = _get_crop_v2_min_blob_size(opt, default=50)
+        self.crop_v2_disk_radius = _get_crop_v2_disk_radius(opt, default=1)
         self.multi_ref_enabled, self.multi_ref_num_refs, self.multi_ref_seed = _get_multi_ref_config(opt, train)
 
         trans_list = [
@@ -414,11 +463,13 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         for rel_path, abs_path in tqdm(img_paths_to_load, desc="Loading CEDAR images (lite)", unit="img"):
             if not os.path.exists(abs_path):
                 raise FileNotFoundError(f"Missing image referenced by pair file: {abs_path}")
-            normalized_img, cropped_img = imread_tool(
+            sig_image = _load_sig_image_for_mode(
                 abs_path,
-                crop_margin_ratio=(self.crop_margin_ratio if self.mode == 'cropped' else 0.0),
+                mode=self.mode,
+                crop_margin_ratio=(self.crop_margin_ratio if _is_cropped_mode(self.mode) else 0.0),
+                crop_v2_min_blob_size=self.crop_v2_min_blob_size,
+                crop_v2_disk_radius=self.crop_v2_disk_radius,
             )
-            sig_image = normalized_img if self.mode == 'normalized' else cropped_img
             self.img_dict[rel_path] = sig_image
 
         if self.multi_ref_enabled:
@@ -471,6 +522,8 @@ class SigDataset_GDPS_Kaggle(Dataset):
         self.image_size = image_size
         self.mode = _resolve_image_mode(mode)
         self.crop_margin_ratio = _get_crop_margin_ratio(opt, default=0.0)
+        self.crop_v2_min_blob_size = _get_crop_v2_min_blob_size(opt, default=50)
+        self.crop_v2_disk_radius = _get_crop_v2_disk_radius(opt, default=1)
         self.multi_ref_enabled, self.multi_ref_num_refs, self.multi_ref_seed = _get_multi_ref_config(opt, train)
         
         trans_list = [
@@ -534,11 +587,13 @@ class SigDataset_GDPS_Kaggle(Dataset):
 
             # Load images with a single progress bar
             for rel_path, full_path in tqdm(img_paths_to_load, desc="Loading GDPS images", unit="img"):
-                normalized_img, cropped_img = imread_tool(
+                sig_image = _load_sig_image_for_mode(
                     full_path,
-                    crop_margin_ratio=(self.crop_margin_ratio if self.mode == 'cropped' else 0.0),
+                    mode=self.mode,
+                    crop_margin_ratio=(self.crop_margin_ratio if _is_cropped_mode(self.mode) else 0.0),
+                    crop_v2_min_blob_size=self.crop_v2_min_blob_size,
+                    crop_v2_disk_radius=self.crop_v2_disk_radius,
                 )
-                sig_image = normalized_img if self.mode == 'normalized' else cropped_img
                 self.img_dict[rel_path] = sig_image
         
         if pair_path is None or not os.path.exists(pair_path):
