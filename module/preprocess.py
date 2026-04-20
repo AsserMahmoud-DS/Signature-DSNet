@@ -1,6 +1,6 @@
 from operator import invert
 import numpy as np
-from skimage import filters, transform, util, measure, morphology
+from skimage import filters, transform, util, morphology
 from typing import Tuple
 from PIL import Image
 
@@ -67,9 +67,9 @@ def get_clean_signature_crop(
     threshold = filters.threshold_otsu(denoised)
     binary_mask = denoised < threshold
 
-    labels = measure.label(binary_mask)
-    cleaned_mask = morphology.remove_small_objects(labels, min_size=min_blob_size)
-    coords = np.column_stack(np.where(cleaned_mask > 0))
+    # Use a boolean mask to avoid labeled-array warnings on single-component images.
+    cleaned_mask = morphology.remove_small_objects(binary_mask, min_size=min_blob_size)
+    coords = np.column_stack(np.where(cleaned_mask))
 
     if coords.size == 0:
         # Fallback for faint/blank scans: keep the original image.
