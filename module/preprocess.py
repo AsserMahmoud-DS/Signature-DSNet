@@ -1,6 +1,6 @@
 from operator import invert
 import numpy as np
-from skimage import filters, transform, util 
+from skimage import filters, transform, util, measure, morphology
 from typing import Tuple
 from PIL import Image
 
@@ -44,6 +44,40 @@ def preprocess_signature(img: np.ndarray,
         cropped = resized
     
     return cropped
+
+
+def get_clean_signature_crop(
+    img: np.ndarray,
+    min_blob_size: int = 50,
+    disk_radius: int = 1,
+) -> np.ndarray:
+    """Crop signature using median denoise + Otsu + connected-components cleanup.
+
+    This is intentionally separate from normalize_image to keep the legacy
+    preprocessing path unchanged.
+    """
+    if img.ndim != 2:
+        raise ValueError(f"Expected a 2D grayscale image, got shape={img.shape}")
+
+    img_u8 = img.astype(np.uint8, copy=False)
+    min_blob_size = max(1, int(min_blob_size))
+    disk_radius = max(1, int(disk_radius))
+
+    denoised = filters.rank.median(img_u8, morphology.disk(disk_radius))
+    threshold = filters.threshold_otsu(denoised)
+    binary_mask = denoised < threshold
+
+    labels = measure.label(binary_mask)
+    cleaned_mask = morphology.remove_small_objects(labels, min_size=min_blob_size)
+    coords = np.column_stack(np.where(cleaned_mask > 0))
+
+    if coords.size == 0:
+        # Fallback for faint/blank scans: keep the original image.
+        return img_u8.copy()
+
+    y_min, x_min = coords.min(axis=0)
+    y_max, x_max = coords.max(axis=0)
+    return img_u8[y_min:y_max + 1, x_min:x_max + 1]
 
 
 def normalize_image(img: np.ndarray,
