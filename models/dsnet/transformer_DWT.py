@@ -368,7 +368,8 @@ class Mixer(nn.Module):
             ll, _, _, _ = haar_dwt2d(x)
             lx = ll
             # LL-only low-pass branch: keep high branch as residual detail.
-            hx = x - self.uppool(ll)
+            lx_up = F.interpolate(ll, size=x.shape[-2:], mode='bilinear', align_corners=False)
+            hx = x - lx_up
         else:
             hx, lx = self.devide_freq_v3(x)
             return hx, lx
