@@ -217,6 +217,90 @@ def _get_rotation_degrees(opt, default=10.0):
     return float(getattr(opt, 'rotation_degrees', default))
 
 
+def _parse_float_pair(value, default):
+    if value is None:
+        return tuple(default)
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        a, b = float(value[0]), float(value[1])
+        lo, hi = min(a, b), max(a, b)
+        return (lo, hi)
+    return tuple(default)
+
+
+def _get_gaussian_blur_prob(opt, default=0.3):
+    if opt is None:
+        return float(default)
+    value = float(getattr(opt, 'gaussian_blur_prob', default))
+    return max(0.0, min(1.0, value))
+
+
+def _get_gaussian_blur_kernel_size(opt, default=3):
+    if opt is None:
+        k = int(default)
+    else:
+        k = int(getattr(opt, 'gaussian_blur_kernel_size', default))
+    k = max(1, k)
+    if k % 2 == 0:
+        k += 1
+    return k
+
+
+def _get_gaussian_blur_sigma(opt, default=(0.1, 0.8)):
+    value = None if opt is None else getattr(opt, 'gaussian_blur_sigma', default)
+    return _parse_float_pair(value, default)
+
+
+def _get_random_erasing_prob(opt, default=0.05):
+    if opt is None:
+        return float(default)
+    value = float(getattr(opt, 'random_erasing_prob', default))
+    return max(0.0, min(1.0, value))
+
+
+def _get_random_erasing_scale(opt, default=(0.005, 0.02)):
+    value = None if opt is None else getattr(opt, 'random_erasing_scale', default)
+    return _parse_float_pair(value, default)
+
+
+def _get_random_erasing_ratio(opt, default=(0.3, 3.3)):
+    value = None if opt is None else getattr(opt, 'random_erasing_ratio', default)
+    return _parse_float_pair(value, default)
+
+
+def _get_random_erasing_value(opt, default=1.0):
+    if opt is None:
+        return float(default)
+    return float(getattr(opt, 'random_erasing_value', default))
+
+
+def _build_train_augmentations(opt):
+    rotation_degrees = _get_rotation_degrees(opt, default=10.0)
+    blur_prob = _get_gaussian_blur_prob(opt, default=0.3)
+    blur_kernel_size = _get_gaussian_blur_kernel_size(opt, default=3)
+    blur_sigma = _get_gaussian_blur_sigma(opt, default=(0.1, 0.8))
+
+    random_erasing_prob = _get_random_erasing_prob(opt, default=0.05)
+    random_erasing_scale = _get_random_erasing_scale(opt, default=(0.005, 0.02))
+    random_erasing_ratio = _get_random_erasing_ratio(opt, default=(0.3, 3.3))
+    random_erasing_value = _get_random_erasing_value(opt, default=1.0)
+
+    pre_tensor_aug_list = [
+        transforms.RandomApply([
+            transforms.GaussianBlur(kernel_size=blur_kernel_size, sigma=blur_sigma)
+        ], p=blur_prob),
+        transforms.RandomRotation(degrees=(-rotation_degrees, rotation_degrees), fill=255),
+    ]
+    pre_tensor_augment = transforms.Compose(pre_tensor_aug_list)
+
+    post_tensor_augment = transforms.RandomErasing(
+        p=random_erasing_prob,
+        scale=random_erasing_scale,
+        ratio=random_erasing_ratio,
+        value=random_erasing_value,
+    )
+    return pre_tensor_augment, post_tensor_augment
+
+
 class LetterboxResize:
     def __init__(self, size=256):
         self.size = size
@@ -251,19 +335,7 @@ class SigDataset_CEDAR_Kaggle(Dataset):
             transforms.ToTensor()]
         self.basic_transforms = transforms.Compose(trans_list)
 
-        rotation_degrees = _get_rotation_degrees(opt, default=10.0)
-        pre_tensor_aug_list = [
-                        transforms.RandomApply([
-                            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.8))
-                        ], p=0.3),
-            transforms.RandomRotation(degrees=(-rotation_degrees, rotation_degrees), fill=255)]
-        self.pre_tensor_augment = transforms.Compose(pre_tensor_aug_list)
-        self.post_tensor_augment = transforms.RandomErasing(
-            p=0.05,
-            scale=(0.005, 0.02),
-            ratio=(0.3, 3.3),
-            value=1.0,
-        )
+        self.pre_tensor_augment, self.post_tensor_augment = _build_train_augmentations(opt)
         
         data_root = image_root
 
@@ -397,20 +469,7 @@ class SigDataset_CEDAR_Kaggle_Lite(Dataset):
         ]
         self.basic_transforms = transforms.Compose(trans_list)
 
-        rotation_degrees = _get_rotation_degrees(opt, default=10.0)
-        pre_tensor_aug_list = [
-            transforms.RandomApply([
-                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.8))
-            ], p=0.3),
-            transforms.RandomRotation(degrees=(-rotation_degrees, rotation_degrees), fill=255),
-        ]
-        self.pre_tensor_augment = transforms.Compose(pre_tensor_aug_list)
-        self.post_tensor_augment = transforms.RandomErasing(
-            p=0.05,
-            scale=(0.005, 0.02),
-            ratio=(0.3, 3.3),
-            value=1.0,
-        )
+        self.pre_tensor_augment, self.post_tensor_augment = _build_train_augmentations(opt)
 
         data_root = image_root
 
@@ -531,19 +590,7 @@ class SigDataset_GDPS_Kaggle(Dataset):
             transforms.ToTensor()]
         self.basic_transforms = transforms.Compose(trans_list)
 
-        rotation_degrees = _get_rotation_degrees(opt, default=10.0)
-        pre_tensor_aug_list = [
-                        transforms.RandomApply([
-                            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.8))
-                        ], p=0.3),
-            transforms.RandomRotation(degrees=(-rotation_degrees, rotation_degrees), fill=255)]
-        self.pre_tensor_augment = transforms.Compose(pre_tensor_aug_list)
-        self.post_tensor_augment = transforms.RandomErasing(
-            p=0.05,
-            scale=(0.005, 0.02),
-            ratio=(0.3, 3.3),
-            value=1.0,
-        )
+        self.pre_tensor_augment, self.post_tensor_augment = _build_train_augmentations(opt)
         
         # For GDPS: pair files are at pair_root (same as image_root usually)
         # Paths in pair files already include "test/" or "train/" prefix
