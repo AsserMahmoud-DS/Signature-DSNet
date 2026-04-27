@@ -127,8 +127,8 @@ class ViT_for_OSV_DSNet(nn.Module):
         x, hx, lx = self.model.blocks4(x)
         x = x.flatten(1,2)
         
-        min_mask = masks.min() + 1e-5
-        masks = masks.ge(min_mask)
+        max_mask = masks.max(dim=1, keepdim=True).values - 1e-5
+        masks = masks.le(max_mask)
         x_patch_new_ = nn.utils.rnn.pad_sequence([r[m] for r, m in zip(x, masks)], batch_first=True)
         
         x_patch_new_ = self.head_str(x_patch_new_)
@@ -249,8 +249,8 @@ class Normal_emb_ViT_for_OSV_DSNet(nn.Module):
         x, hx, lx = self.model.blocks4(x)
         x = x.flatten(1,2)
         
-        min_mask = masks.min() + 1e-5
-        masks = masks.ge(min_mask)
+        max_mask = masks.max(dim=1, keepdim=True).values - 1e-5
+        masks = masks.le(max_mask)
         x_patch_new_ = nn.utils.rnn.pad_sequence([r[m] for r, m in zip(x, masks)], batch_first=True)
         
         x_patch_new_ = self.head_str(x_patch_new_)
