@@ -81,7 +81,8 @@ def get_clean_signature_crop(
 
 
 def normalize_image(img: np.ndarray,
-                    canvas_size: Tuple[int, int] = (840, 1360)) -> np.ndarray:
+                    canvas_size: Tuple[int, int] = (840, 1360),
+                    return_whitened: bool = False) -> np.ndarray:
     """ Centers an image in a pre-defined canvas size, and remove
     noise using OTSU's method.
 
@@ -175,9 +176,15 @@ def normalize_image(img: np.ndarray,
     # Add the image to the blank canvas
     normalized_image[r_start:r_start + img_rows, c_start:c_start + img_cols] = cropped
 
+    cropped_whitened = cropped.copy()
+    cropped_whitened[cropped_whitened > threshold] = 255
+
+
     # Remove noise - anything higher than the threshold. Note that the image is still grayscale
     normalized_image[normalized_image > threshold] = 255
 
+    if return_whitened:
+        return normalized_image, cropped, cropped_whitened
     return normalized_image, cropped
 
 

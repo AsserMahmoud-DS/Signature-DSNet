@@ -144,14 +144,14 @@ def _get_crop_v2_disk_radius(opt, default=1):
 
 
 def _is_cropped_mode(mode):
-    return str(mode).strip().lower() in {'cropped', 'cropped_v2_median'}
+    return str(mode).strip().lower() in {'cropped', 'cropped_whitened', 'cropped_v2_median'}
 
 
 def _resolve_image_mode(mode, default='cropped'):
     if mode is None:
         return default
     mode_str = str(mode).strip().lower()
-    if mode_str in {'normalized', 'cropped', 'cropped_v2_median'}:
+    if mode_str in {'normalized', 'cropped', 'cropped_whitened', 'cropped_v2_median'}:
         return mode_str
     print(f"⚠️  Unsupported mode='{mode}'. Falling back to '{default}'.")
     return default
@@ -178,9 +178,16 @@ def _apply_crop_margin(cropped_image: np.ndarray, margin_ratio: float) -> np.nda
 def imread_tool(img_path, crop_margin_ratio=0.0):
     image = np.asarray(Image.open(img_path).convert('L'))
     inputSize = image.shape
-    normalized_image, cropped_image = normalize_image(image.astype(np.uint8), inputSize)
+    normalized_image, cropped_image, cropped_whitened_image = normalize_image(
+        image.astype(np.uint8), inputSize, return_whitened=True
+    )
     cropped_image = _apply_crop_margin(cropped_image, float(crop_margin_ratio))
-    return Image.fromarray(normalized_image), Image.fromarray(cropped_image)
+    cropped_whitened_image = _apply_crop_margin(cropped_whitened_image, float(crop_margin_ratio))
+    return (
+        Image.fromarray(normalized_image),
+        Image.fromarray(cropped_image),
+        Image.fromarray(cropped_whitened_image),
+    )
 
 
 def _load_sig_image_for_mode(
@@ -192,12 +199,16 @@ def _load_sig_image_for_mode(
 ):
     mode_resolved = _resolve_image_mode(mode)
     if mode_resolved == 'normalized':
-        normalized_img, _ = imread_tool(img_path, crop_margin_ratio=0.0)
+        normalized_img, _, _ = imread_tool(img_path, crop_margin_ratio=0.0)
         return normalized_img
 
     if mode_resolved == 'cropped':
-        _, cropped_img = imread_tool(img_path, crop_margin_ratio=float(crop_margin_ratio))
+        _, cropped_img, _ = imread_tool(img_path, crop_margin_ratio=float(crop_margin_ratio))
         return cropped_img
+
+    if mode_resolved == 'cropped_whitened':
+        _, _, cropped_whitened_img = imread_tool(img_path, crop_margin_ratio=float(crop_margin_ratio))
+        return cropped_whitened_img
 
     with Image.open(img_path) as _img:
         image = np.asarray(_img.convert('L'))
